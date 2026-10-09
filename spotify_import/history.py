@@ -120,11 +120,21 @@ def verify(store, api, cfg, now=None, unresolved=False, ids=None):
         with store.conn:
             for row in group:
                 wanted = names(row)
+                # Last.fm may swap an artist to another script (Bi-2 -> Би-2) while
+                # reporting no correction. An accepted scrobble alone at our exact
+                # second therefore needs only artist OR track to agree. Uncertain
+                # events keep the strict rule: a false match there would lose a play.
+                loose = row["status"] == "confirmed"
                 matches = sum(
                     count
                     for (ts, artist, track, album), count in found.items()
                     if ts == row["assigned_ts"]
-                    and any(same(artist, a) and same(track, t) for a, t in wanted)
+                    and any(
+                        (same(artist, a) or same(track, t))
+                        if loose
+                        else (same(artist, a) and same(track, t))
+                        for a, t in wanted
+                    )
                 )
                 if matches == 1 and by_ts[row["assigned_ts"]] == 1:
                     verified += 1

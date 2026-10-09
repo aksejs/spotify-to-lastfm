@@ -63,7 +63,7 @@ class VerificationTest(test_workflow.WorkflowTest):
         api.tracks[(row["assigned_ts"], "corrected artist", row["track"], "")] = 1
         self.assertEqual(verify(self.store, api, self.cfg, NOW + 60)["verified"], 1)
 
-    def test_lastfm_renamed_scrobbles_verify_but_other_tracks_do_not(self):
+    def test_lastfm_renamed_scrobbles_verify(self):
         # Real renames seen in batch 2, reported with corrected="0".
         cases = [
             ("DIIV", "How Long Have You Known", "DIIV", "How Long Have You Known?"),
@@ -80,7 +80,6 @@ class VerificationTest(test_workflow.WorkflowTest):
                 "гражданская оборона",
                 "Всё Идёт По Плану",
             ),
-            ("DIIV", "Doused", "DIIV", "Oshin"),
         ]
         self.seed(
             [
@@ -102,7 +101,37 @@ class VerificationTest(test_workflow.WorkflowTest):
             api.tracks[(ts, shown_artist, shown_track, "")] = 1
         result = verify(self.store, api, self.cfg, NOW + 60)
         self.assertEqual(result["verified"], 4)
-        self.assertEqual(result["missing_ids"], [stored[("DIIV", "Doused")]["id"]])
+        self.assertEqual(result["missing_ids"], [])
+
+    def test_accepted_scrobble_with_artist_in_other_script_verifies(self):
+        # Real case from step 1: sent "Bi-2", stored as "Би-2", corrected="0".
+        self.seed(
+            [
+                event(
+                    master_metadata_album_artist_name="Bi-2",
+                    master_metadata_track_name="Молитва",
+                ),
+                event(
+                    master_metadata_album_artist_name="Splean",
+                    master_metadata_track_name="Моё сердце",
+                ),
+            ]
+        )
+        self.full_snapshot()
+        api = FakeAPI(
+            display=lambda name: {"Bi-2": "Би-2", "Splean": "Сплин"}.get(name, name)
+        )
+        rows = assign(self.store, select(self.store, 50), self.cfg, NOW)
+        submit(self.store, api, self.cfg, rows, NOW)
+        self.assertEqual(verify(self.store, api, self.cfg, NOW + 60)["verified"], 2)
+
+    def test_other_track_by_other_artist_at_our_second_is_missing(self):
+        api = FakeAPI()
+        rows = self.sent(api, 1)
+        api.tracks.clear()
+        api.tracks[(rows[0]["assigned_ts"], "Someone Else", "Another Song", "")] = 1
+        result = verify(self.store, api, self.cfg, NOW + 60)
+        self.assertEqual(result["missing_ids"], [rows[0]["id"]])
 
     def test_accepted_but_dropped_is_recorded_missing_not_replayed(self):
         api = FakeAPI()
