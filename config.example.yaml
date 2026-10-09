@@ -1,0 +1,18 @@
+account: DivokaSarka
+# Import attempts, including uncertain outcomes, per rolling 24 hours.
+daily_budget: 500
+# Conservative combined ceiling: live plays reduce import capacity.
+# This is a local policy, NOT a claim about Last.fm's actual limit.
+combined_budget: 500
+batch_size: 50
+minimum_played_ms: 30000
+exclude_skipped: false
+# Spotify lacks full track duration. 30s is a configurable import proxy.
+# Set 240000 for a conservative four-minute threshold.
+timestamp_age_days: 2
+request_interval_seconds: 1.0
+poll_seconds: 3600
+overrides:
+  - spotify_track_id: "1nU1x5TSTtj0zXYtQZ7tQd"
+    artist: "AL-90"
+    track: "радикальные танцы"

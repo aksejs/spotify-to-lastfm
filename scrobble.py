@@ -144,4 +144,7 @@ if __name__ == "__main__":
         print("Usage:")
         print("\tpython scrobble.py [path/to/json] [-v]")
         quit(1)
-    asyncio.run(main(sys.argv[1]))
+    raise SystemExit(
+        "Legacy submission is disabled in this fork. Use spotify-import dry-run, "
+        "then spotify-import run --approve-plan PLAN_ID after reviewing the preview."
+    )
