@@ -219,9 +219,15 @@ def refresh_for_write(store, api, cfg, rows, now):
     start = min(
         [now - DAY] + [r["assigned_ts"] for r in rows if r["assigned_ts"] is not None]
     )
-    # Whole calendar days the cursor may write into: the per-day cap needs every
-    # live play on them, including the day that began before now - age.
-    start = min(start, now - (cfg.timestamp_age_days + 1) * DAY)
+    # The per-day cap needs every play on the days the cursor may use. Finished
+    # days rarely change, so the whole window is re-read only every poll_seconds;
+    # batches are verified individually anyway.
+    if now - store.get("last_window_sync", 0) >= cfg.poll_seconds:
+        start = min(start, now - (cfg.timestamp_age_days + 1) * DAY)
+        sync(store, api, cfg, start, now, now)
+        with store.conn:
+            store.set("last_window_sync", now)
+        return
     sync(store, api, cfg, start, now, now)
 
 

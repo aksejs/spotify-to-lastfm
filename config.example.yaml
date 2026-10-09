@@ -9,7 +9,9 @@ minimum_played_ms: 30000
 exclude_skipped: false
 # Spotify lacks full track duration. 30s is a configurable import proxy.
 # Set 240000 for a conservative four-minute threshold.
-timestamp_age_days: 2
+# Oldest day to fill, in days ago (1..12). Last.fm rejects scrobbles older than
+# ~14 days; 12 uses the whole window, oldest days first.
+timestamp_age_days: 12
 # Seconds between consecutive imported scrobbles (1..600).
 timestamp_spacing_seconds: 1
 # After each batch, wait this long, then confirm it in account history.

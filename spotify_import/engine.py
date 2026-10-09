@@ -265,9 +265,10 @@ def assign(store, rows, cfg, now, partial=False):
     load = day_load(store, cfg, now)
     cap = cfg.max_scrobbles_per_day
     settled = now - cfg.day_settle_hours * 3600
-    last = store.rows("SELECT max(assigned_ts) t FROM events WHERE attempts>0")[0]["t"]
     spacing = cfg.timestamp_spacing_seconds
-    cursor = max(now - cfg.timestamp_age_days * DAY, (last + spacing) if last else 0)
+    # Oldest allowed day first: every day in the window is usable once, and the
+    # oldest expires next. Full days and taken seconds are skipped below.
+    cursor = now - cfg.timestamp_age_days * DAY
     done = []
     with store.conn:
         for row in rows:

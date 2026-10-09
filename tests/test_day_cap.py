@@ -141,6 +141,32 @@ class DayCapTest(test_workflow.WorkflowTest):
         )
         self.assertGreater(clock.slept, 18 * 3600)
 
+    def test_backfill_starts_at_oldest_allowed_day_and_moves_forward(self):
+        cfg = replace(self.cfg, timestamp_age_days=12)
+        self.seed([event() for _ in range(7)])
+        first = assign(self.store, self.fresh(4), cfg, NOW)
+        second = assign(self.store, self.fresh(3), cfg, NOW)
+        times = [r["assigned_ts"] for r in first + second]
+        self.assertEqual(times[0], NOW - 12 * DAY)
+        self.assertEqual(times, sorted(times))
+        day = [(t - (NOW - 12 * DAY - 8 * 3600)) // DAY for t in times]
+        self.assertEqual(day, [0, 0, 0, 1, 1, 1, 2])
+
+    def test_whole_window_is_reread_once_per_poll_interval(self):
+        from spotify_import.cli import refresh_for_write
+
+        cfg = replace(self.cfg, timestamp_age_days=12)
+        api = FakeAPI()
+        ranges = []
+        history = api.history
+        api.history = lambda account, start, end: (
+            ranges.append(end - start) or history(account, start, end)
+        )
+        refresh_for_write(self.store, api, cfg, [], NOW)
+        refresh_for_write(self.store, api, cfg, [], NOW + 60)
+        refresh_for_write(self.store, api, cfg, [], NOW + cfg.poll_seconds + 1)
+        self.assertEqual(ranges, [13 * DAY, DAY, 13 * DAY])
+
     def test_invalid_timezone_and_cap(self):
         with self.assertRaises(ValueError):
             Config(account_timezone="Mars/Olympus")
