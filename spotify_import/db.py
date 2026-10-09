@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS events(
  eligible INTEGER NOT NULL, exclusion TEXT, assigned_ts INTEGER UNIQUE,
  status TEXT NOT NULL CHECK(status IN ('pending','submitting','confirmed','rejected','uncertain')),
  attempts INTEGER NOT NULL DEFAULT 0, last_attempt INTEGER, response TEXT, confirmed_at INTEGER,
- overlap TEXT, UNIQUE(source_hash,position));
+ overlap TEXT, verified_at INTEGER, missing_at INTEGER, UNIQUE(source_hash,position));
 CREATE INDEX IF NOT EXISTS queue ON events(status,eligible,original_epoch);
 CREATE INDEX IF NOT EXISTS spotify_id ON events(spotify_id);
 CREATE TABLE IF NOT EXISTS attempts(
@@ -48,10 +48,15 @@ class Store:
         self.conn.execute("PRAGMA synchronous=FULL")
         self.conn.executescript(SCHEMA)
         version = self.get("schema_version")
-        if version not in (None, 1):
+        if version not in (None, 1, 2):
             raise ValueError("Unsupported database schema")
+        columns = {r[1] for r in self.conn.execute("PRAGMA table_info(events)")}
         with self.conn:
-            self.set("schema_version", 1)
+            # v2: when account history showed (or lacked) each accepted scrobble.
+            for column in ("verified_at", "missing_at"):
+                if column not in columns:
+                    self.conn.execute(f"ALTER TABLE events ADD COLUMN {column} INTEGER")
+            self.set("schema_version", 2)
 
     def rows(self, sql, args=()):
         return [dict(r) for r in self.conn.execute(sql, args)]

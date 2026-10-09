@@ -52,20 +52,43 @@ def overlaps(store):
     return candidates
 
 
-def verify(store, api, cfg, now=None, only_uncertain=False):
+def names(row):
+    """Submitted names plus any names Last.fm returned for this scrobble."""
+    result = {(row["artist"].casefold(), row["track"].casefold())}
+    try:
+        response = json.loads(row["response"] or "")
+        result.add(
+            (
+                response["artist"]["#text"].casefold(),
+                response["track"]["#text"].casefold(),
+            )
+        )
+    except (ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return result
+
+
+def verify(store, api, cfg, now=None, unresolved=False, ids=None):
+    """Look up accepted/uncertain scrobbles in account history and record the result.
+
+    Last.fm may display its own capitalization, so names compare case-insensitively.
+    A confirmed event that is absent is recorded as missing; absence never
+    authorizes an automatic replay.
+    """
     now = int(time.time()) if now is None else now
     store.recover()
     rows = store.rows(
         "SELECT * FROM events WHERE status IN ('uncertain','confirmed') AND assigned_ts IS NOT NULL"
-        + (" AND status='uncertain'" if only_uncertain else "")
+        + (" AND (status='uncertain' OR verified_at IS NULL)" if unresolved else "")
     )
-    if not rows:
-        return {"verified": 0, "uncertain_remaining": 0, "not_observed_confirmed": 0}
+    if ids is not None:
+        rows = [r for r in rows if r["id"] in set(ids)]
+    verified = absent = 0
+    missing = []
     # Group by UTC day to avoid fetching years of unrelated account history.
     groups = {}
     for row in rows:
         groups.setdefault(row["assigned_ts"] // 86400, []).append(row)
-    verified = absent = 0
     for group in groups.values():
         found = sync(
             store,
@@ -80,12 +103,12 @@ def verify(store, api, cfg, now=None, only_uncertain=False):
             by_ts[key[0]] += count
         with store.conn:
             for row in group:
+                wanted = names(row)
                 matches = sum(
                     count
                     for (ts, artist, track, album), count in found.items()
                     if ts == row["assigned_ts"]
-                    and artist == row["artist"]
-                    and track == row["track"]
+                    and (artist.casefold(), track.casefold()) in wanted
                 )
                 if matches == 1 and by_ts[row["assigned_ts"]] == 1:
                     verified += 1
@@ -102,16 +125,71 @@ def verify(store, api, cfg, now=None, only_uncertain=False):
                             "UPDATE attempts SET outcome='confirmed' WHERE event_id=? AND outcome='uncertain'",
                             (row["id"],),
                         )
-                elif row["status"] == "confirmed":
+                    store.conn.execute(
+                        "UPDATE events SET verified_at=?,missing_at=NULL WHERE id=?",
+                        (now, row["id"]),
+                    )
+                elif row["status"] == "confirmed" and not matches:
                     absent += 1
+                    if row["verified_at"] is None:
+                        missing.append(row["id"])
+                        store.conn.execute(
+                            "UPDATE events SET missing_at=coalesce(missing_at,?) WHERE id=?",
+                            (now, row["id"]),
+                        )
                 # Absence/corrections/duplicates NEVER authorize replay.
     return {
+        "checked": len(rows),
         "verified": verified,
         "not_observed_confirmed": absent,
+        "missing_ids": missing,
         "uncertain_remaining": store.rows(
             "SELECT count(*) n FROM events WHERE status='uncertain'"
         )[0]["n"],
     }
+
+
+def resend(store, api, cfg, event_ids, note, now=None, min_age=3600):
+    """Requeue accepted scrobbles that account history still lacks, with new timestamps."""
+    now = int(time.time()) if now is None else now
+    if not note.strip():
+        raise ValueError("Evidence note required")
+    rows = store.rows(
+        """SELECT * FROM events WHERE status='confirmed' AND verified_at IS NULL
+        AND missing_at IS NOT NULL"""
+    )
+    if event_ids:
+        rows = [r for r in rows if r["id"] in set(event_ids)]
+        if len(rows) != len(set(event_ids)):
+            raise ValueError("Only events recorded as missing can be resent")
+    if any(now - r["missing_at"] < min_age for r in rows):
+        raise ValueError("Missing for under an hour; Last.fm may still be catching up")
+    if not rows:
+        return {"requeued": 0}
+    # A fresh read immediately before requeueing; anything now visible is kept.
+    verify(store, api, cfg, now, ids=[r["id"] for r in rows])
+    still = store.rows(
+        f"""SELECT * FROM events WHERE verified_at IS NULL AND status='confirmed'
+        AND id IN ({",".join("?" * len(rows))})""",
+        [r["id"] for r in rows],
+    )
+    with store.conn:
+        for row in still:
+            store.conn.execute(
+                """UPDATE events SET status='pending',assigned_ts=NULL,confirmed_at=NULL,
+                missing_at=NULL,response=? WHERE id=?""",
+                ("Accepted but absent from account history; requeued", row["id"]),
+            )
+            store.conn.execute(
+                "INSERT INTO decisions(event_id,time,action,note) VALUES (?,?,?,?)",
+                (
+                    row["id"],
+                    now,
+                    "resend",
+                    json.dumps({"old_timestamp": row["assigned_ts"], "note": note}),
+                ),
+            )
+    return {"requeued": len(still), "found_on_recheck": len(rows) - len(still)}
 
 
 def gaps(store, margin=30):

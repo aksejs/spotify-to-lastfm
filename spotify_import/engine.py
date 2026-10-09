@@ -58,6 +58,16 @@ def status(store, cfg, now=None):
             s: counts.get(s, 0)
             for s in ("pending", "submitting", "confirmed", "rejected", "uncertain")
         },
+        **{
+            f"confirmed_{name}": store.rows(
+                f"SELECT count(*) n FROM events WHERE status='confirmed' AND {where}"
+            )[0]["n"]
+            for name, where in (
+                ("verified", "verified_at IS NOT NULL"),
+                ("unchecked", "verified_at IS NULL AND missing_at IS NULL"),
+                ("missing", "verified_at IS NULL AND missing_at IS NOT NULL"),
+            )
+        },
         "imported_last_24h": confirmed_today,
         **budget(store, cfg, now),
     }
@@ -124,6 +134,10 @@ def select(store, limit, spotify_id=None):
 
 def assign(store, rows, cfg, now):
     occupied = {r["timestamp"] for r in store.rows("SELECT timestamp FROM history")}
+    # Seconds already sent once stay reserved, even after an event is resent.
+    occupied.update(
+        r["assigned_ts"] for r in store.rows("SELECT assigned_ts FROM attempts")
+    )
     occupied.update(
         r["assigned_ts"]
         for r in store.rows(
@@ -131,7 +145,8 @@ def assign(store, rows, cfg, now):
         )
     )
     last = store.rows("SELECT max(assigned_ts) t FROM events WHERE attempts>0")[0]["t"]
-    cursor = max(now - cfg.timestamp_age_days * DAY, (last + 1) if last else 0)
+    spacing = cfg.timestamp_spacing_seconds
+    cursor = max(now - cfg.timestamp_age_days * DAY, (last + spacing) if last else 0)
     with store.conn:
         for row in rows:
             if row["assigned_ts"] is None:
@@ -146,7 +161,7 @@ def assign(store, rows, cfg, now):
                     "UPDATE events SET assigned_ts=? WHERE id=?", (cursor, row["id"])
                 )
                 occupied.add(cursor)
-                cursor += 1
+                cursor += spacing
             if not now - MAX_AGE <= row["assigned_ts"] <= now - 60:
                 raise ValueError(
                     "Assigned timestamp expired or too new; use reset-timestamp for conclusively unaccepted events"

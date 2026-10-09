@@ -24,7 +24,7 @@ from .engine import (
     status,
     submit,
 )
-from .history import gaps, overlaps, sync, verify
+from .history import gaps, overlaps, resend, sync, verify
 from .prepare import prepare, reclassify
 
 
@@ -97,6 +97,12 @@ def parser():
     )
     gap_include.add_argument("path")
     gap_include.add_argument("--note", required=True)
+    again = commands.add_parser(
+        "resend-missing",
+        help="Requeue accepted scrobbles that account history still lacks",
+    )
+    again.add_argument("event_ids", nargs="*", help="Default: all recorded as missing")
+    again.add_argument("--note", required=True)
     reset = commands.add_parser("reset-timestamp")
     reset.add_argument("event_id")
     reset.add_argument("--note", required=True)
@@ -213,6 +219,34 @@ def refresh_for_write(store, api, cfg, rows, now):
     sync(store, api, cfg, start, now, now)
 
 
+def check_sent(store, api, cfg, continuous, now):
+    """Read account history for every accepted scrobble not yet checked."""
+    ids = [
+        r["id"]
+        for r in store.rows(
+            """SELECT id FROM events WHERE status='confirmed'
+            AND verified_at IS NULL AND missing_at IS NULL"""
+        )
+    ]
+    if not ids:
+        return
+    result = verify(store, api, cfg, now, ids=ids)
+    output(
+        {
+            "post_send_check": {
+                "checked": len(ids),
+                "verified": result["verified"],
+                "missing_ids": result["missing_ids"],
+            }
+        }
+    )
+    # Isolated drops are tracked; a pattern of them needs a human before more writes.
+    if continuous and len(result["missing_ids"]) > max(1, len(ids) // 10):
+        raise ValueError(
+            "Accepted scrobbles are missing from account history; stopped for review"
+        )
+
+
 def run(store, api, cfg, args):
     continuous = bool(args.approve_continuous)
     if continuous and args.approve_continuous != cfg.account:
@@ -265,9 +299,21 @@ def run(store, api, cfg, args):
                 return
             time.sleep(min(60, cooldown - now))
             continue
+        # Never send while an earlier accepted batch is unchecked (e.g. after a crash).
+        try:
+            check_sent(store, api, cfg, continuous, now)
+        except (TransportError, APIError) as error:
+            if not continuous or (
+                isinstance(error, APIError) and error.code not in (8, 11, 16, 29)
+            ):
+                raise
+            with store.conn:
+                backoff(store, now, getattr(error, "retry_after", 0))
+            print("History check failed; backing off before any write.", flush=True)
+            continue
         if continuous and now - store.get("last_auto_verify", 0) >= cfg.poll_seconds:
             try:
-                result = verify(store, api, cfg, now, only_uncertain=True)
+                result = verify(store, api, cfg, now, unresolved=True)
                 with store.conn:
                     store.set("last_auto_verify", now)
                 if result["uncertain_remaining"]:
@@ -323,6 +369,20 @@ def run(store, api, cfg, args):
         assign(store, rows, cfg, now)
         count = submit(store, api, cfg, rows, now)
         output({"attempted": count, "status": status(store, cfg)})
+        if count and store.rows(
+            "SELECT 1 FROM events WHERE status='confirmed' AND verified_at IS NULL AND missing_at IS NULL"
+        ):
+            time.sleep(cfg.verify_delay_seconds)
+            try:
+                check_sent(store, api, cfg, continuous, int(time.time()))
+            except (TransportError, APIError):
+                if not continuous:
+                    print(
+                        "Batch sent, but the history check failed; run verify.",
+                        file=sys.stderr,
+                    )
+                    raise
+                # The guard at the top of the loop retries before any new write.
         if not continuous:
             # Plans may exceed a batch; repeat loads skip already resolved events.
             if store.get("cooldown_until", 0) > int(time.time()) or store.get(
@@ -407,6 +467,8 @@ def main(argv=None):
                             "status": status(store, cfg),
                         }
                     )
+                elif args.command == "resend-missing":
+                    output(resend(store, api, cfg, args.event_ids, args.note))
                 elif args.command == "verify":
                     output(verify(store, api, cfg))
                 elif args.command == "run":

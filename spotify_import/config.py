@@ -21,6 +21,10 @@ class Config:
     poll_seconds: int = 3600
     backup_interval_hours: int = 24
     backup_keep: int = 7
+    # Seconds between consecutive assigned timestamps.
+    timestamp_spacing_seconds: int = 1
+    # Wait before reading account history to check a just-sent batch.
+    verify_delay_seconds: int = 30
     # UTC instant from which the account already has live scrobbles of these plays.
     live_scrobbling_since: str | None = None
     overrides: list = field(default_factory=list)
@@ -37,6 +41,8 @@ class Config:
             "poll_seconds",
             "backup_interval_hours",
             "backup_keep",
+            "timestamp_spacing_seconds",
+            "verify_delay_seconds",
         ):
             if type(getattr(self, key)) is not int:
                 raise ValueError(f"{key} must be an integer")
@@ -54,6 +60,10 @@ class Config:
             or self.request_interval_seconds < 0.2
         ):
             raise ValueError("poll_seconds >= 60; request_interval_seconds >= 0.2")
+        if not 1 <= self.timestamp_spacing_seconds <= 600:
+            raise ValueError("timestamp_spacing_seconds must be 1..600")
+        if not 0 <= self.verify_delay_seconds <= 3600:
+            raise ValueError("verify_delay_seconds must be 0..3600")
         if self.backup_interval_hours < 1 or self.backup_keep < 1:
             raise ValueError("backup_interval_hours and backup_keep must be positive")
         if type(self.exclude_skipped) is not bool or not isinstance(

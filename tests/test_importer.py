@@ -66,16 +66,25 @@ def response(rows, codes=None):
 
 
 class FakeAPI:
-    def __init__(self, codes=None, error=None):
+    def __init__(self, codes=None, error=None, drop=(), display=None):
         self.codes = codes
         self.error = error
         self.tracks = Counter()
         self.calls = 0
+        # Accepted but never stored, as Last.fm occasionally does.
+        self.drop = set(drop)
+        # Last.fm's own capitalization in history, e.g. str.upper.
+        self.display = display or (lambda name: name)
 
     def submit(self, rows):
         self.calls += 1
         if self.error:
             raise self.error
+        codes = self.codes or [0] * len(rows)
+        for row, code in zip(rows, codes):
+            if code == 0 and row["assigned_ts"] not in self.drop:
+                key = (row["assigned_ts"], self.display(row["artist"]))
+                self.tracks[(*key, self.display(row["track"]), row["album"])] += 1
         return response(rows, self.codes)
 
     def history(self, account, start, end):

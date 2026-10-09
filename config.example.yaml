@@ -10,6 +10,10 @@ exclude_skipped: false
 # Spotify lacks full track duration. 30s is a configurable import proxy.
 # Set 240000 for a conservative four-minute threshold.
 timestamp_age_days: 2
+# Seconds between consecutive imported scrobbles (1..600).
+timestamp_spacing_seconds: 1
+# After each batch, wait this long, then confirm it in account history.
+verify_delay_seconds: 30
 request_interval_seconds: 1.0
 poll_seconds: 3600
 # Plays ending at/after this UTC instant were already scrobbled live by the

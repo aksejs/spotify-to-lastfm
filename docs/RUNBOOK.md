@@ -34,7 +34,7 @@ tail -f state/worker.log
 
 Linux: substitute the same placeholders into `deploy/spotify-import.service`, copy it to `~/.config/systemd/user/`, and run `systemctl --user enable --now spotify-import`. Also run `loginctl enable-linger` so the worker runs without an open session.
 
-The worker sleeps while the rolling budget is exhausted, verifies uncertain events every `poll_seconds`, and snapshots the database every `backup_interval_hours` (`state/import-backups/`). A Mac that sleeps simply resumes later. The budget is wall-clock based.
+After each batch the worker waits `verify_delay_seconds`, reads account history, and records every play as verified or missing. It sends nothing while an earlier batch is unchecked, and it stops for review if more than 10% of a batch (minimum 2 plays) is missing. The worker sleeps while the rolling budget is exhausted, verifies uncertain events every `poll_seconds`, and snapshots the database every `backup_interval_hours` (`state/import-backups/`). A Mac that sleeps simply resumes later. The budget is wall-clock based.
 
 ## Pause and resume
 
@@ -57,6 +57,14 @@ Just start again. On startup, `submitting` rows become `uncertain` and the lock 
    - visible on Last.fm: `si resolve EVENT_ID confirm --note "seen at <url/time>"`
    - certainly absent, and you accept a possible duplicate: `si resolve EVENT_ID retry --accept-duplicate-risk --note "..."`
    - leave it: uncertain events stay quarantined forever and are never resent.
+
+## Accepted but missing scrobbles
+
+Last.fm sometimes accepts a scrobble (code 0, counted as accepted) and still doesn't store it. `status` shows these as `confirmed_missing`. The worker re-checks them every `poll_seconds`, and a late arrival clears the mark.
+
+1. `si verify` re-reads history for all sent plays.
+2. Still missing after an hour: `si resend-missing --note "absent after re-check"`, or pass specific event IDs. It re-reads history once more, then requeues only plays that are still absent, with a new timestamp. The old timestamp stays reserved and is recorded in `decisions`.
+3. If the worker stopped because many plays went missing, look at the account history first. Repeated drops point to a systematic problem (for example, name filtering). Change nothing until the cause is understood.
 
 ## Diagnose rejected tracks
 
