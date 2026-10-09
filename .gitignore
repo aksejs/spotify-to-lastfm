@@ -21,3 +21,6 @@ Streaming_History_*.json
 *.zip
 .ruff_cache/
 !tests/fixtures/*.json
+# Private Spotify export copied into the repo for local use
+Spotify Extended Streaming History/
+.DS_Store
