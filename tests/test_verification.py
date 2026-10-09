@@ -49,6 +49,47 @@ class VerificationTest(test_workflow.WorkflowTest):
         api.tracks[(row["assigned_ts"], "corrected artist", row["track"], "")] = 1
         self.assertEqual(verify(self.store, api, self.cfg, NOW + 60)["verified"], 1)
 
+    def test_lastfm_renamed_scrobbles_verify_but_other_tracks_do_not(self):
+        # Real renames seen in batch 2, reported with corrected="0".
+        cases = [
+            ("DIIV", "How Long Have You Known", "DIIV", "How Long Have You Known?"),
+            (
+                "Gorillaz",
+                "Some Kind of Nature (feat. Lou Reed)",
+                "Gorillaz",
+                "Some Kind of Nature",
+            ),
+            ("The Make-Up", "Joy of Sound", "Make Up", "Joy of Sound"),
+            (
+                "Гражданская Оборона",
+                "Всё идёт по плану",
+                "гражданская оборона",
+                "Всё Идёт По Плану",
+            ),
+            ("DIIV", "Doused", "DIIV", "Oshin"),
+        ]
+        self.seed(
+            [
+                event(
+                    master_metadata_album_artist_name=artist,
+                    master_metadata_track_name=track,
+                )
+                for artist, track, _, _ in cases
+            ]
+        )
+        self.full_snapshot()
+        api = FakeAPI()
+        rows = assign(self.store, select(self.store, 50), self.cfg, NOW)
+        api.drop = {r["assigned_ts"] for r in rows}
+        submit(self.store, api, self.cfg, rows, NOW)
+        stored = {(r["artist"], r["track"]): r for r in rows}
+        for artist, track, shown_artist, shown_track in cases:
+            ts = stored[(artist, track)]["assigned_ts"]
+            api.tracks[(ts, shown_artist, shown_track, "")] = 1
+        result = verify(self.store, api, self.cfg, NOW + 60)
+        self.assertEqual(result["verified"], 4)
+        self.assertEqual(result["missing_ids"], [stored[("DIIV", "Doused")]["id"]])
+
     def test_accepted_but_dropped_is_recorded_missing_not_replayed(self):
         api = FakeAPI()
         self.seed([event(), event()])

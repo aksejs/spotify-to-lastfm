@@ -1,5 +1,7 @@
 import json
+import re
 import time
+import unicodedata
 from collections import Counter
 
 
@@ -52,17 +54,31 @@ def overlaps(store):
     return candidates
 
 
+def simplify(name):
+    """Comparable form of a name that Last.fm may have tidied up on its side.
+
+    Drops case, bracketed parts such as "(feat. X)", a leading "The", and
+    punctuation: "The Make-Up" -> "makeup", "How Long Have You Known?" ->
+    "howlonghaveyouknown". Only used for the scrobble at our exact timestamp.
+    """
+    name = unicodedata.normalize("NFKC", name).casefold()
+    full = "".join(ch for ch in name if ch.isalnum())
+    name = re.sub(r"[(\[].*?[)\]]", " ", name).strip()
+    name = re.sub(r"^the\s+", "", name)
+    return "".join(ch for ch in name if ch.isalnum()) or full
+
+
+def same(a, b):
+    a, b = simplify(a), simplify(b)
+    return a == b or bool(a and b and (a in b or b in a))
+
+
 def names(row):
     """Submitted names plus any names Last.fm returned for this scrobble."""
-    result = {(row["artist"].casefold(), row["track"].casefold())}
+    result = {(row["artist"], row["track"])}
     try:
         response = json.loads(row["response"] or "")
-        result.add(
-            (
-                response["artist"]["#text"].casefold(),
-                response["track"]["#text"].casefold(),
-            )
-        )
+        result.add((response["artist"]["#text"], response["track"]["#text"]))
     except (ValueError, TypeError, KeyError, AttributeError):
         pass
     return result
@@ -108,7 +124,7 @@ def verify(store, api, cfg, now=None, unresolved=False, ids=None):
                     count
                     for (ts, artist, track, album), count in found.items()
                     if ts == row["assigned_ts"]
-                    and (artist.casefold(), track.casefold()) in wanted
+                    and any(same(artist, a) and same(track, t) for a, t in wanted)
                 )
                 if matches == 1 and by_ts[row["assigned_ts"]] == 1:
                     verified += 1
