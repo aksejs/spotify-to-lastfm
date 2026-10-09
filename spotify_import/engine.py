@@ -334,7 +334,7 @@ def submit(store, api, cfg, rows, now=None):
                 for k in ("track", "artist", "album", "timestamp", "ignoredMessage")
                 if k in item
             }
-            safe['batch_counts'] = {'accepted': accepted, 'ignored': ignored}
+            safe["batch_counts"] = {"accepted": accepted, "ignored": ignored}
             state = (
                 "confirmed" if code == 0 else ("pending" if code == 5 else "rejected")
             )
@@ -350,9 +350,9 @@ def submit(store, api, cfg, rows, now=None):
         with store.conn:
             backoff(store, now)
         return len(rows)
-    metadata = {'consecutive_failures': 0}
+    metadata = {"consecutive_failures": 0}
     if 5 in codes:
-        metadata['cooldown_until'] = now + DAY + 60
+        metadata["cooldown_until"] = now + DAY + 60
     outcome(store, batch, rows, states, now, metadata)
     return len(rows)
 
@@ -372,6 +372,16 @@ def resolve(store, event_id, action, note, now=None):
         elif action == "exclude" and row["attempts"] == 0:
             store.conn.execute(
                 "UPDATE events SET status='rejected',eligible=0,exclusion='manual_overlap' WHERE id=?",
+                (event_id,),
+            )
+        elif (
+            action == "include"
+            and row["attempts"] == 0
+            and row["exclusion"] == "live_scrobbled_period"
+        ):
+            # Reviewed gap: Last.fm has no live scrobble for this play.
+            store.conn.execute(
+                "UPDATE events SET status='pending',eligible=1,exclusion=NULL WHERE id=?",
                 (event_id,),
             )
         elif action == "keep" and row["attempts"] == 0:

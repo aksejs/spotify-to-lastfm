@@ -1,0 +1,15 @@
+# Template only (systemd --user). Enabling this unit IS the approval for
+# unattended scrobbling. Replace REPO and ACCOUNT; see docs/RUNBOOK.md.
+[Unit]
+Description=Spotify history import to Last.fm
+After=network-online.target
+
+[Service]
+WorkingDirectory=REPO
+ExecStart=REPO/.venv/bin/spotify-import --config config.local.yaml run --approve-continuous ACCOUNT
+# Exit 0 means the queue is finished; failures restart at most hourly.
+Restart=on-failure
+RestartSec=3600
+
+[Install]
+WantedBy=default.target

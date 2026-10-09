@@ -474,6 +474,7 @@ class APITest(unittest.TestCase):
                 "name": "t",
                 "album": {"#text": ""},
             }
+
         with patch.object(
             api,
             "call",

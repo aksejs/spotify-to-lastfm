@@ -112,3 +112,49 @@ def verify(store, api, cfg, now=None, only_uncertain=False):
             "SELECT count(*) n FROM events WHERE status='uncertain'"
         )[0]["n"],
     }
+
+
+def gaps(store, margin=30):
+    """Live-period plays with no account scrobble while they were playing.
+
+    Review aid only: a nearby scrobble may be this play under another name, and an
+    empty window can still mean the account history snapshot is incomplete.
+    """
+    latest = store.rows(
+        "SELECT max(original_epoch) t FROM events WHERE exclusion='live_scrobbled_period'"
+    )[0]["t"]
+    if latest is None:
+        return []
+    if not store.rows(
+        "SELECT 1 FROM history_ranges WHERE start=0 AND end>=?", (latest,)
+    ):
+        raise ValueError(
+            "Gap review needs a full history snapshot: sync-history --full"
+        )
+    import bisect
+
+    history = store.rows("SELECT * FROM history ORDER BY timestamp")
+    times = [row["timestamp"] for row in history]
+    result = []
+    # Only events whose sole exclusion is the live period would otherwise be eligible.
+    for row in store.rows("""SELECT * FROM events WHERE attempts=0 AND status='rejected'
+            AND exclusion='live_scrobbled_period' ORDER BY original_epoch,id"""):
+        raw = json.loads(row["raw_json"])
+        start = row["original_epoch"] - int(raw.get("ms_played", 0) / 1000)
+        lo = bisect.bisect_left(times, start - margin)
+        hi = bisect.bisect_right(times, row["original_epoch"] + margin)
+        nearby = [
+            f"{h['timestamp']} {h['artist']} — {h['track']}" for h in history[lo:hi]
+        ]
+        result.append(
+            {
+                "id": row["id"],
+                "original_ts": row["original_ts"],
+                "ms_played": raw.get("ms_played"),
+                "artist": row["artist"],
+                "track": row["track"],
+                "album": row["album"],
+                "nearby_scrobbles": " | ".join(nearby),
+            }
+        )
+    return result

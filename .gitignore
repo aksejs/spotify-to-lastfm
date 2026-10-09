@@ -20,3 +20,4 @@ endsong_*.json
 Streaming_History_*.json
 *.zip
 .ruff_cache/
+!tests/fixtures/*.json

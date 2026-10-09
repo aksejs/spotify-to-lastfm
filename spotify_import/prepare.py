@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from .history import overlaps
+
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -52,6 +54,10 @@ def parse_event(raw, cfg, video=False):
         reasons.append("too_short")
     if cfg.exclude_skipped and raw.get("skipped") is True:
         reasons.append("skipped")
+    cutoff = cfg.live_cutoff()
+    if epoch is not None and cutoff is not None and epoch >= cutoff:
+        # Probably scrobbled live already; only a reviewed gap list may re-include it.
+        reasons.append("live_scrobbled_period")
     return (
         ts if isinstance(ts, str) else None,
         epoch,
@@ -147,6 +153,10 @@ def reclassify(store, cfg):
     rows = store.rows("""SELECT e.*,s.name FROM events e JOIN sources s ON s.hash=e.source_hash
                          WHERE attempts=0 AND status IN ('pending','rejected')
                          AND (exclusion IS NULL OR exclusion!='manual_overlap')""")
+    included = {
+        r["event_id"]
+        for r in store.rows("SELECT event_id FROM decisions WHERE action='include'")
+    }
     with store.conn:
         for row in rows:
             _, _, _, meta, reasons = parse_event(
@@ -154,6 +164,8 @@ def reclassify(store, cfg):
                 cfg,
                 row["name"].startswith("Streaming_History_Video_"),
             )
+            if row["id"] in included:
+                reasons = [r for r in reasons if r != "live_scrobbled_period"]
             store.conn.execute(
                 """UPDATE events SET artist=?,track=?,album=?,eligible=?,exclusion=?,
                 status=?,assigned_ts=NULL,overlap=NULL WHERE id=?""",
@@ -169,4 +181,6 @@ def reclassify(store, cfg):
             )
         store.set("preparation_policy", cfg.preparation_policy())
         store.conn.execute("DELETE FROM plans")
+    # Reclassification clears overlap markers; restore them from the local snapshot.
+    overlaps(store)
     return len(rows)

@@ -53,6 +53,8 @@ Input files are read only. Supported names are `endsong_*.json`, `Streaming_Hist
 
 Default eligibility requires valid timestamps, artist/track metadata, and at least 30,000 milliseconds played. Skipped events are retained if they meet that threshold; missing albums are allowed. **This threshold is an import policy, not proof of Last.fm's half-track/four-minute listening criterion:** Spotify exports do not provide full track duration. Configure filtering explicitly. Exclusion reasons may overlap, so reason counts need not sum to the excluded-event total.
 
+**Live-scrobbled period.** If the account already received live scrobbles from Spotify, set `live_scrobbling_since` to the first one and run `reclassify`. Plays ending at or after it are excluded as `live_scrobbled_period` because exact-match overlap detection misses renamed artists and drifted timestamps. `gap-review export PATH` lists the excluded plays with no account scrobble while they played. After you delete unwanted rows, `gap-review include PATH --note ...` queues the rest. Inclusions are recorded as decisions and survive `reclassify`.
+
 A dry run assigns and stores exact timestamps and outputs a plan hash. It never submits. Without a history snapshot, overlap checks are reported unavailable. Overlap matching compares track/artist and original end or estimated start time within two seconds; these are review candidates, not automatic deduplication. Differently named tracks and incomplete account history can evade matching. Cross-file identical records are reported for review without being discarded.
 
 ## Submit only a reviewed plan
@@ -81,13 +83,13 @@ After a full history snapshot, overlap review, and explicit separate authorizati
 spotify-import --config config.local.yaml run --approve-continuous YOUR_CONFIGURED_ACCOUNT
 ```
 
-It runs in the foreground, sleeps when the budget is exhausted, and periodically reconciles uncertain events. It is not yet installed as a launchd/systemd service. Stop with Ctrl-C and resume with the same database and command. Only one mutating importer process may hold the database lock. Read-only `status` remains available while it runs.
+It runs in the foreground, sleeps when the budget is exhausted, and periodically reconciles uncertain events. launchd/systemd templates are in `deploy/`; nothing is installed automatically. See [the runbook](docs/RUNBOOK.md) for installing, pausing, budget changes, restore, reconciliation, and rejection diagnosis. Stop with Ctrl-C and resume with the same database and command. Only one mutating importer process may hold the database lock. Read-only `status` remains available while it runs.
 
 Pause the worker before exporting or backing up. Use `backup`, which uses SQLite's backup API; do not copy only a live database file while omitting its WAL. Restore to a separate path and inspect using `--db`. **A stale backup can forget submissions made after the backup:** do not resume it until later attempt records and account history have been reconciled. Restoring files alone cannot make forgotten submissions safe to replay.
 
 `resolve EVENT_ID confirm|keep|exclude|retry --note EVIDENCE` records manual decisions. `retry` additionally requires `--accept-duplicate-risk`. Absence from history is not proof that an uncertain request failed. `reset-timestamp EVENT_ID --note EVIDENCE` is restricted to conclusively unaccepted events. `reclassify` applies changed filtering/overrides only to never-attempted events and invalidates existing plans; submitted metadata remains immutable.
 
-Remaining work includes full-scale history/recovery validation, a more complete rejection-repair workflow, and deployment/runbook documentation. Keep unresolved events and their audit records until reviewed.
+Remaining work includes full-scale history/recovery validation and a rejection-repair workflow for already-submitted metadata. Keep unresolved events and their audit records until reviewed.
 
 ## Tests
 

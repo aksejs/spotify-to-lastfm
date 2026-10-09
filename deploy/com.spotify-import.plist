@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template only. Loading this file IS the approval for unattended scrobbling.
+  Replace REPO and ACCOUNT, then follow docs/RUNBOOK.md ("Unattended service").
+  Exit 0 (queue finished) stops the job; failures restart at most hourly.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.spotify-import</string>
+  <key>WorkingDirectory</key>
+  <string>REPO</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>REPO/.venv/bin/spotify-import</string>
+    <string>--config</string>
+    <string>config.local.yaml</string>
+    <string>run</string>
+    <string>--approve-continuous</string>
+    <string>ACCOUNT</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>3600</integer>
+  <key>StandardOutPath</key>
+  <string>REPO/state/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>REPO/state/worker.log</string>
+</dict>
+</plist>

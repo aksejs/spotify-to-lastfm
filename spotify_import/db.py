@@ -2,7 +2,7 @@ import fcntl
 import json
 import os
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 SCHEMA = """
@@ -102,5 +102,26 @@ class Store:
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
-        with sqlite3.connect(destination) as target:
+        with closing(sqlite3.connect(destination)) as target:
             self.conn.backup(target)
+
+    def automatic_backup(self, cfg, now):
+        """Snapshots before writes, retaining only this worker's numbered backups."""
+        if (
+            now - self.get("last_automatic_backup", 0)
+            < cfg.backup_interval_hours * 3600
+        ):
+            return
+        folder = self.path.parent / (self.path.stem + "-backups")
+        destination = folder / f"auto-{now:012d}.sqlite"
+        temporary = destination.with_suffix(".incomplete")
+        # A process crash may leave an incomplete file; never mistake it for a backup.
+        if temporary.exists():
+            temporary.unlink()
+        self.backup(temporary)
+        os.replace(temporary, destination)
+        with self.conn:
+            self.set("last_automatic_backup", now)
+        backups = sorted(folder.glob("auto-[0-9]" + "[0-9]" * 11 + ".sqlite"))
+        for old in backups[: -cfg.backup_keep]:
+            old.unlink()

@@ -1,0 +1,38 @@
+[
+  {
+    "ts": "2020-01-01T00:05:00Z",
+    "ms_played": 240000,
+    "master_metadata_album_artist_name": "Synthetic Artist",
+    "master_metadata_track_name": "Синтетический трек",
+    "master_metadata_album_album_name": "Synthetic Album",
+    "spotify_track_uri": "spotify:track:synthetic",
+    "skipped": false
+  },
+  {
+    "ts": "2020-01-01T00:05:00Z",
+    "ms_played": 240000,
+    "master_metadata_album_artist_name": "Synthetic Artist",
+    "master_metadata_track_name": "Синтетический трек",
+    "master_metadata_album_album_name": "Synthetic Album",
+    "spotify_track_uri": "spotify:track:synthetic",
+    "skipped": false
+  },
+  {
+    "ts": "2020-01-01T00:05:00Z",
+    "ms_played": 1000,
+    "master_metadata_album_artist_name": "Synthetic Artist",
+    "master_metadata_track_name": "Синтетический трек",
+    "master_metadata_album_album_name": "Synthetic Album",
+    "spotify_track_uri": "spotify:track:synthetic",
+    "skipped": false
+  },
+  {
+    "ts": "2020-01-01T00:05:00Z",
+    "ms_played": 240000,
+    "master_metadata_album_artist_name": "Synthetic Artist",
+    "master_metadata_track_name": null,
+    "master_metadata_album_album_name": "Synthetic Album",
+    "spotify_track_uri": "spotify:track:synthetic",
+    "skipped": false
+  }
+]

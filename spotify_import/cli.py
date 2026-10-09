@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -23,7 +24,7 @@ from .engine import (
     status,
     submit,
 )
-from .history import overlaps, sync, verify
+from .history import gaps, overlaps, sync, verify
 from .prepare import prepare, reclassify
 
 
@@ -75,9 +76,27 @@ def parser():
     backup.add_argument("path")
     decision = commands.add_parser("resolve")
     decision.add_argument("event_id")
-    decision.add_argument("action", choices=["confirm", "keep", "exclude", "retry"])
+    decision.add_argument(
+        "action", choices=["confirm", "keep", "exclude", "include", "retry"]
+    )
     decision.add_argument("--note", required=True)
     decision.add_argument("--accept-duplicate-risk", action="store_true")
+    review = commands.add_parser(
+        "gap-review", help="Review live-period plays that Last.fm may have missed"
+    )
+    review_steps = review.add_subparsers(dest="step", required=True)
+    gap_export = review_steps.add_parser("export")
+    gap_export.add_argument("path")
+    gap_export.add_argument(
+        "--all",
+        action="store_true",
+        help="Also list plays with a scrobble nearby (likely already scrobbled)",
+    )
+    gap_include = review_steps.add_parser(
+        "include", help="Queue every event ID in a reviewed export"
+    )
+    gap_include.add_argument("path")
+    gap_include.add_argument("--note", required=True)
     reset = commands.add_parser("reset-timestamp")
     reset.add_argument("event_id")
     reset.add_argument("--note", required=True)
@@ -133,6 +152,58 @@ def export_audit(store, path, fmt):
     return {"exported_events": len(rows), "path": str(path)}
 
 
+def export_gaps(store, path, everything):
+    rows = [r for r in gaps(store) if everything or not r["nearby_scrobbles"]]
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.open("x", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "id",
+                "original_ts",
+                "ms_played",
+                "artist",
+                "track",
+                "album",
+                "nearby_scrobbles",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+    return {"exported_candidates": len(rows), "path": str(path)}
+
+
+def include_gaps(store, path, note):
+    with Path(path).open(newline="", encoding="utf-8") as f:
+        ids = list(dict.fromkeys(row["id"] for row in csv.DictReader(f)))
+    included = {
+        r["event_id"]
+        for r in store.rows("SELECT event_id FROM decisions WHERE action='include'")
+    }
+    pending = [i for i in ids if i not in included]
+    # Validate the whole reviewed file before changing any event.
+    valid = {
+        r["id"]
+        for r in store.rows(
+            "SELECT id FROM events WHERE attempts=0 AND exclusion='live_scrobbled_period'"
+        )
+    }
+    invalid = [i for i in pending if i not in valid]
+    if invalid:
+        raise ValueError(
+            f"{len(invalid)} IDs are not excluded live-period events, e.g. {invalid[0]}"
+        )
+    for event_id in pending:
+        resolve(store, event_id, "include", note)
+    # An included play that exactly matches account history is quarantined again.
+    return {
+        "included": len(pending),
+        "already_included": len(ids) - len(pending),
+        "potential_overlaps": overlaps(store),
+    }
+
+
 def refresh_for_write(store, api, cfg, rows, now):
     start = min(
         [now - DAY] + [r["assigned_ts"] for r in rows if r["assigned_ts"] is not None]
@@ -146,6 +217,10 @@ def run(store, api, cfg, args):
     continuous = bool(args.approve_continuous)
     if continuous and args.approve_continuous != cfg.account:
         raise ValueError("--approve-continuous must exactly match configured account")
+    if store.get("preparation_policy") != cfg.preparation_policy():
+        raise ValueError(
+            "Preparation policy changed; review and run reclassify before submission"
+        )
     if continuous:
         latest_source = (
             store.rows("SELECT max(original_epoch) t FROM events")[0]["t"] or 0
@@ -157,9 +232,28 @@ def run(store, api, cfg, args):
                 "Before continuous importing, run sync-history --full and review overlap candidates"
             )
     # Never begin a POST sequence before authenticated account validation succeeds.
-    api.check_account(cfg.account)
+    while True:
+        now = int(time.time())
+        remaining = store.get("cooldown_until", 0) - now
+        if continuous and remaining > 0:
+            time.sleep(min(60, remaining))
+            continue
+        try:
+            api.check_account(cfg.account)
+            break
+        except (TransportError, APIError) as error:
+            if not continuous or (
+                isinstance(error, APIError) and error.code not in (8, 11, 16, 29)
+            ):
+                raise
+            with store.conn:
+                backoff(store, now, getattr(error, "retry_after", 0))
+            print(
+                "Account validation unavailable; waiting before any write.", flush=True
+            )
     with store.conn:
         store.set("auth_blocked", None)
+        store.set("last_run_config", asdict(cfg))
     while True:
         now = int(time.time())
         if store.get("auth_blocked"):
@@ -224,6 +318,8 @@ def run(store, api, cfg, args):
             print("Rolling budget exhausted; waiting.", flush=True)
             continue
         rows = rows[: min(capacity, cfg.batch_size)]
+        if continuous:
+            store.automatic_backup(cfg, now)
         assign(store, rows, cfg, now)
         count = submit(store, api, cfg, rows, now)
         output({"attempted": count, "status": status(store, cfg)})
@@ -241,10 +337,14 @@ def run(store, api, cfg, args):
 def main(argv=None):
     os.umask(0o077)
     args = parser().parse_args(argv)
+    store = None
     try:
         cfg = load_config(args.config)
         store = Store(args.db)
         if args.command == "status":
+            account = store.get("account")
+            if account and account.casefold() != cfg.account.casefold():
+                raise ValueError("Database belongs to another Last.fm account")
             output(status(store, cfg))
             return
         with store.lock():
@@ -275,6 +375,11 @@ def main(argv=None):
                         "Manual retry needs --accept-duplicate-risk and an evidence note"
                     )
                 resolve(store, args.event_id, args.action, args.note)
+            elif args.command == "gap-review":
+                if args.step == "export":
+                    output(export_gaps(store, args.path, args.all))
+                else:
+                    output(include_gaps(store, args.path, args.note))
             elif args.command == "reset-timestamp":
                 reset_timestamp(store, args.event_id, args.note)
             else:
@@ -319,4 +424,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("Stopped. Restart safely with the same database.", file=sys.stderr)
         return 130
+    finally:
+        if store is not None:
+            store.conn.close()
     return 0

@@ -12,7 +12,15 @@ exclude_skipped: false
 timestamp_age_days: 2
 request_interval_seconds: 1.0
 poll_seconds: 3600
+# Plays ending at/after this UTC instant were already scrobbled live by the
+# Spotify→Last.fm connection; they are excluded as live_scrobbled_period and
+# only re-included through `gap-review`. Find it with sync-history --full.
+# Remove this line (and run reclassify) if your account has no live scrobbles.
+live_scrobbling_since: "2025-11-11T20:58:40Z"
 overrides:
   - spotify_track_id: "1nU1x5TSTtj0zXYtQZ7tQd"
     artist: "AL-90"
     track: "радикальные танцы"
+# Continuous mode snapshots before writing and keeps seven automatic snapshots.
+backup_interval_hours: 24
+backup_keep: 7
