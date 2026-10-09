@@ -64,6 +64,11 @@ def parser():
         metavar="ACCOUNT",
         help="Explicitly authorize ongoing migration for this account",
     )
+    run.add_argument(
+        "--once",
+        action="store_true",
+        help="With --approve-continuous: exit when the rolling budget is used up",
+    )
     commands.add_parser("verify")
     hist = commands.add_parser("sync-history")
     hist.add_argument("--full", action="store_true")
@@ -249,6 +254,8 @@ def check_sent(store, api, cfg, continuous, now):
 
 def run(store, api, cfg, args):
     continuous = bool(args.approve_continuous)
+    # Continuous until the budget or a cooldown would make it sleep.
+    once = continuous and getattr(args, "once", False)
     if continuous and args.approve_continuous != cfg.account:
         raise ValueError("--approve-continuous must exactly match configured account")
     if store.get("preparation_policy") != cfg.preparation_policy():
@@ -270,6 +277,9 @@ def run(store, api, cfg, args):
         now = int(time.time())
         remaining = store.get("cooldown_until", 0) - now
         if continuous and remaining > 0:
+            if once:
+                output({"paused_until": store.get("cooldown_until", 0)})
+                return
             time.sleep(min(60, remaining))
             continue
         try:
@@ -294,7 +304,7 @@ def run(store, api, cfg, args):
             raise ValueError("Authentication blocked; correct credentials and restart")
         cooldown = store.get("cooldown_until", 0)
         if now < cooldown:
-            if not continuous:
+            if not continuous or once:
                 output({"paused_until": cooldown})
                 return
             time.sleep(min(60, cooldown - now))
@@ -350,10 +360,10 @@ def run(store, api, cfg, args):
             continue
         capacity = budget(store, cfg, now)["remaining_daily_budget"]
         if not capacity:
-            if not continuous:
+            if not continuous or once:
                 output(
                     {
-                        "message": "Rolling budget exhausted; restart same plan later",
+                        "message": "Rolling budget exhausted; restart later",
                         "status": status(store, cfg),
                     }
                 )

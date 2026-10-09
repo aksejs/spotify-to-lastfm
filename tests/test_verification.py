@@ -1,5 +1,10 @@
 """Post-send history checks, missing scrobbles, and resends. Networking is faked."""
 
+from contextlib import redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import json
 from dataclasses import replace
 
@@ -8,8 +13,17 @@ import test_workflow
 from test_importer import FakeAPI, NOW, event
 from spotify_import.api import TransportError
 from spotify_import.db import Store
-from spotify_import.engine import DAY, assign, dry_run, select, status, submit
-from spotify_import.history import resend, verify
+from spotify_import.engine import (
+    DAY,
+    assign,
+    dry_run,
+    limit_hits,
+    select,
+    status,
+    submit,
+)
+from spotify_import.cli import run
+from spotify_import.history import resend, sync, verify
 
 
 # Imported as a module attribute so discovery does not rerun the base tests here.
@@ -210,6 +224,50 @@ class VerificationTest(test_workflow.WorkflowTest):
         result = resend(self.store, api, self.cfg, [], "late", NOW + 7200)
         self.assertEqual(result, {"requeued": 0, "found_on_recheck": 1})
         self.assertEqual(self.rows()[0]["status"], "confirmed")
+
+    def test_once_sends_the_budget_then_exits_without_sleeping(self):
+        self.seed([event() for _ in range(6)])
+        self.full_snapshot()
+        api = FakeAPI()
+        api.check_account = lambda account: None
+        cfg = replace(self.cfg, daily_budget=4, combined_budget=4, batch_size=2)
+        args = SimpleNamespace(
+            approve_plan=None, approve_continuous=cfg.account, once=True
+        )
+        clock = test_workflow.Clock()
+        with (
+            patch("spotify_import.cli.time.time", clock.time),
+            patch("spotify_import.cli.time.sleep", clock.sleep),
+            redirect_stdout(StringIO()),
+        ):
+            run(self.store, api, cfg, args)
+        self.assertEqual(api.calls, 2)
+        self.assertEqual(self.by_status()["verified"], 4)
+        # Only the post-send check delays; no waiting for the next day.
+        self.assertLess(clock.slept, 3600)
+
+    def test_daily_limit_refusal_reports_accepted_totals(self):
+        self.seed([event() for _ in range(4)])
+        live = FakeAPI()
+        live.tracks[(NOW - 100, "Live Artist", "Live Track", "")] = 2
+        sync(self.store, live, self.cfg, 0, NOW, NOW)
+        first = assign(self.store, select(self.store, 2), self.cfg, NOW)
+        submit(self.store, FakeAPI(), self.cfg, first, NOW)
+        second = assign(self.store, select(self.store, 2), self.cfg, NOW)
+        submit(self.store, FakeAPI(codes=[0, 5]), self.cfg, second, NOW + 10)
+        hits = limit_hits(self.store)
+        self.assertEqual(len(hits), 1)
+        hit = hits[0]
+        self.assertEqual(hit["kind"], "daily_limit_code_5")
+        self.assertEqual((hit["batch_accepted"], hit["batch_refused_by_limit"]), (1, 1))
+        self.assertEqual(
+            hit["accepted_rolling_24h"], {"imports": 3, "live": 2, "total": 5}
+        )
+        self.assertIn("daily_limit_hits", status(self.store, self.cfg, NOW + 20))
+        # The refused play waits for the cooldown with its timestamp kept.
+        refused = [r for r in self.rows() if r["status"] == "pending"][0]
+        self.assertEqual(refused["assigned_ts"], second[1]["assigned_ts"])
+        self.assertGreater(self.store.get("cooldown_until"), NOW + DAY)
 
     def test_timestamp_spacing(self):
         self.seed([event() for _ in range(3)])

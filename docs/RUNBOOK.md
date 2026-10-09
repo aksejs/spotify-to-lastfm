@@ -36,6 +36,15 @@ Linux: substitute the same placeholders into `deploy/spotify-import.service`, co
 
 After each batch the worker waits `verify_delay_seconds`, reads account history, and records every play as verified or missing. It sends nothing while an earlier batch is unchecked, and it stops for review if more than 10% of a batch (minimum 2 plays) is missing. The worker sleeps while the rolling budget is exhausted, verifies uncertain events every `poll_seconds`, and snapshots the database every `backup_interval_hours` (`state/import-backups/`). A Mac that sleeps simply resumes later. The budget is wall-clock based.
 
+## Finding the real daily limit
+
+Last.fm doesn't publish the number. Probe it in steps, at least 24 hours apart:
+
+1. Set `daily_budget` to the step (e.g. 1000, then 1500, 2000, 2500, 3000) and `combined_budget` to about 300 more, so your live listening doesn't throttle the test.
+2. `si run --approve-continuous ACCOUNT --once` sends up to the budget, checks every batch, and exits.
+3. `si status` → `daily_limit_hits`. It stays empty until Last.fm refuses with code 5. Then it shows how many scrobbles were accepted in the 24 h before (imports + live) and since UTC midnight. That number is the limit; which of the two totals matches shows how Last.fm counts.
+4. After a hit, refused plays keep their timestamps and wait 24 h. Settle at about 80% of the measured total minus your usual live listening. **Exceeding the limit also blocks your live scrobbles until it resets.**
+
 ## Pause and resume
 
 - Pause: `launchctl bootout gui/$(id -u)/com.spotify-import` (Linux: `systemctl --user stop spotify-import`). A stop that lands during an HTTP request leaves that batch `submitting`. The next start marks it `uncertain` and the worker reconciles it from history; it is never replayed blindly.

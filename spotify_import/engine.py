@@ -39,6 +39,73 @@ def budget(store, cfg, now):
     }
 
 
+def limit_hits(store):
+    """Evidence for Last.fm's real daily limit, from every limit refusal so far.
+
+    Imports count when accepted (attempt time); live plays count by scrobble
+    time. Both a rolling 24 h and a UTC-day total are reported, because Last.fm
+    does not document which one it enforces.
+    """
+    batches = {}
+    for row in store.rows(
+        "SELECT batch,sent_at,outcome,response FROM attempts WHERE response IS NOT NULL"
+    ):
+        try:
+            response = json.loads(row["response"])
+        except ValueError:
+            continue
+        code = str(response.get("ignoredMessage", {}).get("code", ""))
+        # 5 = daily scrobble limit; 29 = request rate limit, kept apart.
+        kind = "daily_limit_code_5" if code == "5" else None
+        if response.get("api_error") == 29:
+            kind = "rate_limit_error_29"
+        entry = batches.setdefault(
+            row["batch"], {"at": row["sent_at"], "accepted": 0, "limited": 0}
+        )
+        entry["accepted"] += row["outcome"] == "confirmed"
+        if kind:
+            entry["limited"] += 1
+            entry["kind"] = kind
+    imports = {
+        (r["assigned_ts"], r["artist"], r["track"])
+        for r in store.rows(
+            "SELECT a.assigned_ts,e.artist,e.track FROM attempts a JOIN events e ON e.id=a.event_id"
+        )
+    }
+
+    def accepted_between(start, end):
+        sent = store.rows(
+            "SELECT count(*) n FROM attempts WHERE outcome='confirmed' AND sent_at>? AND sent_at<=?",
+            (start, end),
+        )[0]["n"]
+        live = sum(
+            r["multiplicity"]
+            for r in store.rows(
+                "SELECT * FROM history WHERE timestamp>? AND timestamp<=?", (start, end)
+            )
+            if (r["timestamp"], r["artist"], r["track"]) not in imports
+        )
+        return {"imports": sent, "live": live, "total": sent + live}
+
+    result = []
+    for entry in sorted(batches.values(), key=lambda e: e["at"]):
+        if not entry["limited"]:
+            continue
+        at = entry["at"]
+        midnight = at - at % DAY
+        result.append(
+            {
+                "at_utc": datetime.fromtimestamp(at, UTC).isoformat(),
+                "kind": entry["kind"],
+                "batch_accepted": entry["accepted"],
+                "batch_refused_by_limit": entry["limited"],
+                "accepted_rolling_24h": accepted_between(at - DAY, at),
+                "accepted_since_utc_midnight": accepted_between(midnight - 1, at),
+            }
+        )
+    return result
+
+
 def status(store, cfg, now=None):
     now = int(time.time()) if now is None else now
     counts = {
@@ -118,6 +185,7 @@ def status(store, cfg, now=None):
     result["potential_overlaps"] = store.rows(
         "SELECT count(*) n FROM events WHERE overlap IS NOT NULL"
     )[0]["n"]
+    result["daily_limit_hits"] = limit_hits(store)
     result["history_coverage"] = store.rows(
         "SELECT * FROM history_ranges ORDER BY fetched_at DESC LIMIT 5"
     )
