@@ -4,6 +4,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -25,6 +26,12 @@ class Config:
     timestamp_spacing_seconds: int = 1
     # Wait before reading account history to check a just-sent batch.
     verify_delay_seconds: int = 30
+    # Last.fm silently drops scrobbles beyond ~750 per calendar day of their
+    # timestamp (observed 2026-10-09). Days count in UTC and account_timezone.
+    max_scrobbles_per_day: int = 740
+    account_timezone: str = "UTC"
+    # Only fill days that ended this long ago, so live plays never hit the cap.
+    day_settle_hours: int = 2
     # UTC instant from which the account already has live scrobbles of these plays.
     live_scrobbling_since: str | None = None
     overrides: list = field(default_factory=list)
@@ -43,6 +50,8 @@ class Config:
             "backup_keep",
             "timestamp_spacing_seconds",
             "verify_delay_seconds",
+            "max_scrobbles_per_day",
+            "day_settle_hours",
         ):
             if type(getattr(self, key)) is not int:
                 raise ValueError(f"{key} must be an integer")
@@ -62,6 +71,14 @@ class Config:
             raise ValueError("poll_seconds >= 60; request_interval_seconds >= 0.2")
         if not 1 <= self.timestamp_spacing_seconds <= 600:
             raise ValueError("timestamp_spacing_seconds must be 1..600")
+        if not 1 <= self.max_scrobbles_per_day <= 10000:
+            raise ValueError("max_scrobbles_per_day must be 1..10000")
+        if not 0 <= self.day_settle_hours <= 48:
+            raise ValueError("day_settle_hours must be 0..48")
+        try:
+            ZoneInfo(self.account_timezone)
+        except (ZoneInfoNotFoundError, ValueError, TypeError):
+            raise ValueError("account_timezone must be an IANA name") from None
         if not 0 <= self.verify_delay_seconds <= 3600:
             raise ValueError("verify_delay_seconds must be 0..3600")
         if self.backup_interval_hours < 1 or self.backup_keep < 1:

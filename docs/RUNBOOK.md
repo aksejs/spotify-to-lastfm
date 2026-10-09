@@ -36,14 +36,16 @@ Linux: substitute the same placeholders into `deploy/spotify-import.service`, co
 
 After each batch the worker waits `verify_delay_seconds`, reads account history, and records every play as verified or missing. It sends nothing while an earlier batch is unchecked, and it stops for review if more than 10% of a batch (minimum 2 plays) is missing. The worker sleeps while the rolling budget is exhausted, verifies uncertain events every `poll_seconds`, and snapshots the database every `backup_interval_hours` (`state/import-backups/`). A Mac that sleeps simply resumes later. The budget is wall-clock based.
 
-## Finding the real daily limit
+## Last.fm's per-day limit
 
-Last.fm doesn't publish the number. Probe it in steps, at least 24 hours apart:
+Measured on 2026-10-09: Last.fm stores at most **750 scrobbles per calendar day of the scrobble's timestamp** (the count matched in both UTC and the account's timezone). Beyond that it still answers "accepted, 0 ignored" and drops the scrobble. No code 5 was returned.
 
-1. Set `daily_budget` to the step (e.g. 1000, then 1500, 2000, 2500, 3000) and `combined_budget` to about 300 more, so your live listening doesn't throttle the test.
-2. `si run --approve-continuous ACCOUNT --once` sends up to the budget, checks every batch, and exits.
-3. `si status` → `daily_limit_hits`. It stays empty until Last.fm refuses with code 5. Then it shows how many scrobbles were accepted in the 24 h before (imports + live) and since UTC midnight. That number is the limit; which of the two totals matches shows how Last.fm counts.
-4. After a hit, refused plays keep their timestamps and wait 24 h. Settle at about 80% of the measured total minus your usual live listening. **Exceeding the limit also blocks your live scrobbles until it resets.**
+The importer therefore:
+- fills each finished day (ended `day_settle_hours` ago in UTC and `account_timezone`) up to `max_scrobbles_per_day` (740), counting live plays already on it;
+- moves to the next day when one is full, and waits when no finished day has room. Roughly one new day opens per real day, so throughput is about 740 minus your live plays that day;
+- checks every batch after sending, so any further drop is caught and stops the run.
+
+Day-filling only uses days whose live listening is complete, so your own scrobbles never compete with the import. `daily_budget` still caps submissions per rolling 24 h; a separate per-submission limit (code 5) has not been observed yet. `status` → `daily_limit_hits` records it if it ever appears.
 
 ## Pause and resume
 

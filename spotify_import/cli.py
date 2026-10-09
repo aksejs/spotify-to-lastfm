@@ -219,8 +219,9 @@ def refresh_for_write(store, api, cfg, rows, now):
     start = min(
         [now - DAY] + [r["assigned_ts"] for r in rows if r["assigned_ts"] is not None]
     )
-    # Empty queue needs the planned assignment window as well as today's live plays.
-    start = min(start, now - cfg.timestamp_age_days * DAY)
+    # Whole calendar days the cursor may write into: the per-day cap needs every
+    # live play on them, including the day that began before now - age.
+    start = min(start, now - (cfg.timestamp_age_days + 1) * DAY)
     sync(store, api, cfg, start, now, now)
 
 
@@ -376,7 +377,21 @@ def run(store, api, cfg, args):
         rows = rows[: min(capacity, cfg.batch_size)]
         if continuous:
             store.automatic_backup(cfg, now)
-        assign(store, rows, cfg, now)
+        rows = assign(store, rows, cfg, now, partial=continuous)
+        if not rows:
+            # Every finished day in the window is at Last.fm's per-day cap.
+            if once:
+                output(
+                    {
+                        "message": "No day with room yet; the next one opens after midnight",
+                        "status": status(store, cfg),
+                    }
+                )
+                return
+            with store.conn:
+                store.set("cooldown_until", now + cfg.poll_seconds)
+            print("No day with room under the cap; waiting.", flush=True)
+            continue
         count = submit(store, api, cfg, rows, now)
         output({"attempted": count, "status": status(store, cfg)})
         if count and store.rows(

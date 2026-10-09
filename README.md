@@ -73,7 +73,7 @@ Previously confirmed events are not submitted again. **Every batch is checked ag
 
 A default rolling 24-hour budget counts 500 import attempts, including failures and uncertain attempts. A second combined budget also subtracts observed live listening. This is a conservative local policy, not a statement of Last.fm's actual daily limit. Independent clients can submit additional plays after a history check. Daily-limit responses pause for at least 24 hours; explicit temporary API refusals back off and retain assigned timestamps.
 
-New timestamps start two days before submission, use distinct seconds, and avoid known occupied timestamps. Original timestamps remain in the database. Uncertain or confirmed events cannot have their timestamps reset. The safe submission window is conservatively bounded to 13 days; expired pending assignments stop for review.
+New timestamps start two days before submission, use distinct seconds, and avoid known occupied timestamps. Last.fm silently drops scrobbles beyond about 750 per calendar day of their timestamp, so each finished day is filled only up to `max_scrobbles_per_day` (740), live plays included; see the runbook. Original timestamps remain in the database. Uncertain or confirmed events cannot have their timestamps reset. The safe submission window is conservatively bounded to 13 days; expired pending assignments stop for review.
 
 ## Continuous mode and recovery
 

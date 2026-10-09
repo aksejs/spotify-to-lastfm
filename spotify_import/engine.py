@@ -5,6 +5,7 @@ import time
 import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from .api import APIError, TransportError
 
@@ -143,8 +144,13 @@ def status(store, cfg, now=None):
         "SELECT count(*) n FROM events WHERE status='confirmed' AND confirmed_at>?",
         (now - 7 * DAY,),
     )[0]["n"]
+    live = result["observed_live_24h"]
+    # One new finished day opens per real day, holding at most the cap minus
+    # that day's live listening.
     capacity = min(
-        cfg.daily_budget, max(0, cfg.combined_budget - result["observed_live_24h"])
+        cfg.daily_budget,
+        max(0, cfg.combined_budget - live),
+        max(0, cfg.max_scrobbles_per_day - live),
     )
     throughput = (
         recent / min(7, (now - first) / DAY)
@@ -200,7 +206,51 @@ def select(store, limit, spotify_id=None):
     )
 
 
-def assign(store, rows, cfg, now):
+def zones(cfg):
+    return [ZoneInfo(name) for name in dict.fromkeys(["UTC", cfg.account_timezone])]
+
+
+def days(ts, cfg):
+    """Calendar day of a timestamp in every timezone Last.fm might count by."""
+    return [(str(z), datetime.fromtimestamp(ts, z).date()) for z in zones(cfg)]
+
+
+def next_midnight(ts, zone):
+    day = datetime.fromtimestamp(ts, zone).date() + timedelta(days=1)
+    return int(datetime.combine(day, datetime.min.time(), zone).timestamp())
+
+
+def day_load(store, cfg, now):
+    """Scrobbles per calendar day around the assignable window.
+
+    Stored history (live plays and verified imports) plus imports assigned but
+    not yet seen in history. Imports that Last.fm dropped are not counted.
+    """
+    start = now - MAX_AGE - 2 * DAY
+    load = Counter()
+    for row in store.rows(
+        "SELECT timestamp,multiplicity FROM history WHERE timestamp>=?", (start,)
+    ):
+        for key in days(row["timestamp"], cfg):
+            load[key] += row["multiplicity"]
+    for row in store.rows(
+        """SELECT assigned_ts FROM events WHERE assigned_ts>=? AND (
+        status IN ('pending','submitting','uncertain')
+        OR (status='confirmed' AND verified_at IS NULL AND missing_at IS NULL))""",
+        (start,),
+    ):
+        for key in days(row["assigned_ts"], cfg):
+            load[key] += 1
+    return load
+
+
+def assign(store, rows, cfg, now, partial=False):
+    """Give each row a distinct past second on a finished day below the cap.
+
+    Last.fm accepts but silently drops scrobbles beyond its per-day limit, so
+    full days are skipped. With partial=True, assignment stops at the first row
+    without a safe slot and only assigned rows are returned; otherwise it raises.
+    """
     occupied = {r["timestamp"] for r in store.rows("SELECT timestamp FROM history")}
     # Seconds already sent once stay reserved, even after an event is resent.
     occupied.update(
@@ -212,15 +262,32 @@ def assign(store, rows, cfg, now):
             "SELECT assigned_ts FROM events WHERE assigned_ts IS NOT NULL"
         )
     )
+    load = day_load(store, cfg, now)
+    cap = cfg.max_scrobbles_per_day
+    settled = now - cfg.day_settle_hours * 3600
     last = store.rows("SELECT max(assigned_ts) t FROM events WHERE attempts>0")[0]["t"]
     spacing = cfg.timestamp_spacing_seconds
     cursor = max(now - cfg.timestamp_age_days * DAY, (last + spacing) if last else 0)
+    done = []
     with store.conn:
         for row in rows:
             if row["assigned_ts"] is None:
-                while cursor in occupied:
-                    cursor += 1
-                if cursor > now - 60:
+                while True:
+                    full = [
+                        zone
+                        for zone, key in zip(zones(cfg), days(cursor, cfg))
+                        if load[key] >= cap
+                    ]
+                    if full:
+                        cursor = max(next_midnight(cursor, zone) for zone in full)
+                    elif cursor in occupied:
+                        cursor += 1
+                    else:
+                        break
+                # The whole day must be over in every counted timezone.
+                if max(next_midnight(cursor, z) for z in zones(cfg)) > settled:
+                    if partial:
+                        break
                     raise ValueError(
                         "No safe timestamp slots; wait before preparing another batch"
                     )
@@ -229,12 +296,19 @@ def assign(store, rows, cfg, now):
                     "UPDATE events SET assigned_ts=? WHERE id=?", (cursor, row["id"])
                 )
                 occupied.add(cursor)
+                for key in days(cursor, cfg):
+                    load[key] += 1
                 cursor += spacing
+            elif any(load[key] > cap for key in days(row["assigned_ts"], cfg)):
+                raise ValueError(
+                    "Assigned day is over the per-day cap; use reset-timestamp"
+                )
             if not now - MAX_AGE <= row["assigned_ts"] <= now - 60:
                 raise ValueError(
                     "Assigned timestamp expired or too new; use reset-timestamp for conclusively unaccepted events"
                 )
-    return rows
+            done.append(row)
+    return done
 
 
 def dry_run(store, cfg, limit=10, spotify_id=None, online=False, now=None):

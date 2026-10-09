@@ -14,6 +14,12 @@ timestamp_age_days: 2
 timestamp_spacing_seconds: 1
 # After each batch, wait this long, then confirm it in account history.
 verify_delay_seconds: 30
+# Last.fm keeps at most ~750 scrobbles per calendar day of their timestamp and
+# silently drops the rest while reporting them accepted (observed 2026-10-09).
+# Imports fill finished days up to this cap, counted in UTC and account_timezone.
+max_scrobbles_per_day: 740
+account_timezone: "Europe/Warsaw"
+day_settle_hours: 2
 request_interval_seconds: 1.0
 poll_seconds: 3600
 # Plays ending at/after this UTC instant were already scrobbled live by the
