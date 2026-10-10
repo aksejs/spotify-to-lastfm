@@ -299,7 +299,7 @@ class VerificationTest(test_workflow.WorkflowTest):
         self.assertGreater(self.store.get("cooldown_until"), NOW + DAY)
 
     def test_timestamp_spacing(self):
-        self.seed([event() for _ in range(3)])
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(3)])
         cfg = replace(self.cfg, timestamp_spacing_seconds=60)
         rows = assign(self.store, select(self.store, 50), cfg, NOW)
         times = [r["assigned_ts"] for r in rows]

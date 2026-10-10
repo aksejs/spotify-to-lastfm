@@ -12,6 +12,8 @@ from .api import APIError, TransportError
 DAY = 86400
 # Conservative interior of the approximately 14-day API window.
 MAX_AGE = 13 * DAY
+# Minimum distance between two scrobbles of the same artist and track.
+REPEAT_GAP = 300
 
 
 def budget(store, cfg, now):
@@ -265,6 +267,18 @@ def assign(store, rows, cfg, now, partial=False):
     load = day_load(store, cfg, now)
     cap = cfg.max_scrobbles_per_day
     settled = now - cfg.day_settle_hours * 3600
+    # Last.fm drops one of two scrobbles of the same track a few seconds apart
+    # when their albums differ (seen twice), so repeats keep a realistic gap.
+    repeats = {}
+    window = now - MAX_AGE - 2 * DAY
+    for r in store.rows(
+        "SELECT timestamp t,artist,track FROM history WHERE timestamp>=?", (window,)
+    ) + store.rows(
+        "SELECT assigned_ts t,artist,track FROM events WHERE assigned_ts>=?", (window,)
+    ):
+        repeats.setdefault((r["artist"].casefold(), r["track"].casefold()), []).append(
+            r["t"]
+        )
     spacing = cfg.timestamp_spacing_seconds
     # Oldest allowed day first: every day in the window is usable once, and the
     # oldest expires next. Full days and taken seconds are skipped below.
@@ -273,7 +287,11 @@ def assign(store, rows, cfg, now, partial=False):
     with store.conn:
         for row in rows:
             if row["assigned_ts"] is None:
+                same = repeats.setdefault(
+                    (row["artist"].casefold(), row["track"].casefold()), []
+                )
                 while True:
+                    near = [t for t in same if abs(t - cursor) < REPEAT_GAP]
                     full = [
                         zone
                         for zone, key in zip(zones(cfg), days(cursor, cfg))
@@ -283,6 +301,8 @@ def assign(store, rows, cfg, now, partial=False):
                         cursor = max(next_midnight(cursor, zone) for zone in full)
                     elif cursor in occupied:
                         cursor += 1
+                    elif near:
+                        cursor = max(near) + REPEAT_GAP
                     else:
                         break
                 # The whole day must be over in every counted timezone.
@@ -297,6 +317,7 @@ def assign(store, rows, cfg, now, partial=False):
                     "UPDATE events SET assigned_ts=? WHERE id=?", (cursor, row["id"])
                 )
                 occupied.add(cursor)
+                same.append(cursor)
                 for key in days(cursor, cfg):
                     load[key] += 1
                 cursor += spacing

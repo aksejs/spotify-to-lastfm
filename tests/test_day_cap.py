@@ -37,7 +37,7 @@ class DayCapTest(test_workflow.WorkflowTest):
         sync(self.store, api, self.cfg, 0, NOW, NOW)
 
     def test_full_day_moves_to_next_midnight(self):
-        self.seed([event() for _ in range(5)])
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(5)])
         rows = assign(self.store, select(self.store, 50), self.cfg, NOW)
         times = [r["assigned_ts"] for r in rows]
         self.assertTrue(all(JAN13 <= t < JAN14 for t in times[:3]))
@@ -166,6 +166,25 @@ class DayCapTest(test_workflow.WorkflowTest):
         refresh_for_write(self.store, api, cfg, [], NOW + 60)
         refresh_for_write(self.store, api, cfg, [], NOW + cfg.poll_seconds + 1)
         self.assertEqual(ranges, [13 * DAY, DAY, 13 * DAY])
+
+    def test_repeated_track_keeps_realistic_gap(self):
+        # Seen twice: same track, different albums, seconds apart -> one dropped.
+        self.seed(
+            [
+                event(master_metadata_album_album_name="Vol.1 (Remastered)"),
+                event(master_metadata_album_album_name="Camp Kill Yourself, Vol.1"),
+                event(master_metadata_track_name="Other"),
+            ]
+        )
+        cfg = replace(self.cfg, max_scrobbles_per_day=740)
+        rows = assign(self.store, select(self.store, 50), cfg, NOW)
+        by_track = {}
+        for row in rows:
+            by_track.setdefault(row["track"], []).append(row["assigned_ts"])
+        repeat = sorted(by_track["Радикальные Танцы"])
+        self.assertGreaterEqual(repeat[1] - repeat[0], 300)
+        # The other track still fills the gap right away.
+        self.assertLess(by_track["Other"][0], repeat[1])
 
     def test_invalid_timezone_and_cap(self):
         with self.assertRaises(ValueError):
