@@ -60,8 +60,8 @@ class Config:
             or min(self.daily_budget, self.combined_budget) < 1
         ):
             raise ValueError("budgets must be positive; batch_size must be 1..50")
-        if not 1 <= self.timestamp_age_days <= 12 or self.minimum_played_ms < 0:
-            raise ValueError("timestamp_age_days must be 1..12; minimum_played_ms >= 0")
+        if not 1 <= self.timestamp_age_days <= 13 or self.minimum_played_ms < 0:
+            raise ValueError("timestamp_age_days must be 1..13; minimum_played_ms >= 0")
         if (
             type(self.request_interval_seconds) not in (int, float)
             or not math.isfinite(self.request_interval_seconds)

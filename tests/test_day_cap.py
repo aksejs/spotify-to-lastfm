@@ -186,6 +186,24 @@ class DayCapTest(test_workflow.WorkflowTest):
         # The other track still fills the gap right away.
         self.assertLess(by_track["Other"][0], repeat[1])
 
+    def test_thirteen_day_window_keeps_a_sending_margin(self):
+        from spotify_import.engine import ASSIGN_MARGIN, MAX_AGE
+
+        cfg = replace(self.cfg, timestamp_age_days=13)
+        self.seed([event()])
+        row = assign(self.store, select(self.store, 1), cfg, NOW)[0]
+        self.assertEqual(row["assigned_ts"], NOW - MAX_AGE + ASSIGN_MARGIN)
+        with self.assertRaises(ValueError):
+            replace(self.cfg, timestamp_age_days=14)
+
+    def test_timestamp_refusal_stops_the_run(self):
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(6)])
+        self.full_snapshot()
+        api = FakeAPI(codes=[3, 3])
+        with self.assertRaises(ValueError):
+            self.scheduler(api, replace(self.cfg, batch_size=2))
+        self.assertEqual(api.calls, 1)
+
     def test_invalid_timezone_and_cap(self):
         with self.assertRaises(ValueError):
             Config(account_timezone="Mars/Olympus")

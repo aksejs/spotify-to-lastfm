@@ -400,6 +400,21 @@ def run(store, api, cfg, args):
             continue
         count = submit(store, api, cfg, rows, now)
         output({"attempted": count, "status": status(store, cfg)})
+        # Timestamp refusals (3 too old, 4 too new) mean the window is misjudged;
+        # every following batch would be refused the same way.
+        refused = [
+            r
+            for r in store.rows(
+                "SELECT response FROM attempts WHERE sent_at=? AND outcome='rejected'",
+                (now,),
+            )
+            if '"code": "3"' in (r["response"] or "")
+            or '"code": "4"' in (r["response"] or "")
+        ]
+        if refused:
+            raise ValueError(
+                f"Last.fm refused {len(refused)} timestamps as too old/new; stopped"
+            )
         if count and store.rows(
             "SELECT 1 FROM events WHERE status='confirmed' AND verified_at IS NULL AND missing_at IS NULL"
         ):

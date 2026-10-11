@@ -12,6 +12,8 @@ from .api import APIError, TransportError
 DAY = 86400
 # Conservative interior of the approximately 14-day API window.
 MAX_AGE = 13 * DAY
+# Newest assignments stay this far inside MAX_AGE when the window is maximal.
+ASSIGN_MARGIN = 1800
 # Minimum distance between two scrobbles of the same artist and track.
 REPEAT_GAP = 300
 
@@ -282,7 +284,8 @@ def assign(store, rows, cfg, now, partial=False):
     spacing = cfg.timestamp_spacing_seconds
     # Oldest allowed day first: every day in the window is usable once, and the
     # oldest expires next. Full days and taken seconds are skipped below.
-    cursor = now - cfg.timestamp_age_days * DAY
+    # Stay ASSIGN_MARGIN inside MAX_AGE so a batch is still valid when sent.
+    cursor = max(now - cfg.timestamp_age_days * DAY, now - MAX_AGE + ASSIGN_MARGIN)
     done = []
     with store.conn:
         for row in rows:
