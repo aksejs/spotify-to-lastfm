@@ -526,7 +526,14 @@ def submit(store, api, cfg, rows, now=None):
             store,
             batch,
             rows,
-            [("uncertain", "Malformed/inconsistent batch response")] * len(rows),
+            [
+                (
+                    "uncertain",
+                    "Malformed/inconsistent batch response: "
+                    + json.dumps(response, ensure_ascii=False)[:20000],
+                )
+            ]
+            * len(rows),
             now,
         )
         with store.conn:

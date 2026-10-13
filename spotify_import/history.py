@@ -61,7 +61,7 @@ def simplify(name):
     punctuation: "The Make-Up" -> "makeup", "How Long Have You Known?" ->
     "howlonghaveyouknown". Only used for the scrobble at our exact timestamp.
     """
-    name = unicodedata.normalize("NFKC", name).casefold()
+    name = unicodedata.normalize("NFKC", name).casefold().replace("ё", "е")
     full = "".join(ch for ch in name if ch.isalnum())
     name = re.sub(r"[(\[].*?[)\]]", " ", name).strip()
     name = re.sub(r"^the\s+", "", name)
@@ -122,17 +122,18 @@ def verify(store, api, cfg, now=None, unresolved=False, ids=None):
                 wanted = names(row)
                 # Last.fm may swap an artist to another script (Bi-2 -> Би-2) while
                 # reporting no correction. An accepted scrobble alone at our exact
-                # second therefore needs only artist OR track to agree. Uncertain
-                # events keep the strict rule: a false match there would lose a play.
+                # second therefore needs only artist OR track to agree.
+                # Uncertain events need the track itself to agree: Last.fm also
+                # rewrites artists (Черный Лукич -> Чёрный Лукич,
+                # Grazhdanskaya Oborona -> Гражданская Оборона). Our second was
+                # free right before sending, so the sole scrobble there is ours.
                 loose = row["status"] == "confirmed"
                 matches = sum(
                     count
                     for (ts, artist, track, album), count in found.items()
                     if ts == row["assigned_ts"]
                     and any(
-                        (same(artist, a) or same(track, t))
-                        if loose
-                        else (same(artist, a) and same(track, t))
+                        (same(artist, a) or same(track, t)) if loose else same(track, t)
                         for a, t in wanted
                     )
                 )

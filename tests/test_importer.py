@@ -274,13 +274,38 @@ class ImporterTest(unittest.TestCase):
         rows = self.assigned()
         api = FakeAPI(error=TransportError("timeout"))
         submit(self.store, api, self.cfg, rows, NOW)
-        api.tracks[(rows[0]["assigned_ts"], "Corrected", rows[0]["track"], "")] = 1
+        # Another track at our second is not ours; duplicates stay ambiguous.
+        api.tracks[(rows[0]["assigned_ts"], "Corrected", "Other Track", "")] = 1
         api.tracks[
             (rows[1]["assigned_ts"], rows[1]["artist"], rows[1]["track"], "")
         ] = 2
         self.assertEqual(
             verify(self.store, api, self.cfg, NOW + 600)["uncertain_remaining"], 2
         )
+
+    def test_uncertain_with_rewritten_artist_reconciles_by_track(self):
+        # Real case: response lost; Last.fm stored "Чёрный Лукич" and
+        # "Гражданская Оборона" for "Черный Лукич" / "Grazhdanskaya Oborona".
+        self.seed(
+            [
+                event(master_metadata_album_artist_name="Черный Лукич"),
+                event(
+                    master_metadata_album_artist_name="Grazhdanskaya Oborona",
+                    master_metadata_track_name="После нас",
+                ),
+            ]
+        )
+        rows = self.assigned()
+        api = FakeAPI(error=TransportError("garbled"))
+        submit(self.store, api, self.cfg, rows, NOW)
+        shown = {
+            "Черный Лукич": "Чёрный Лукич",
+            "Grazhdanskaya Oborona": "Гражданская Оборона",
+        }
+        for row in rows:
+            api.tracks[(row["assigned_ts"], shown[row["artist"]], row["track"], "")] = 1
+        result = verify(self.store, api, self.cfg, NOW + 600)
+        self.assertEqual(result["uncertain_remaining"], 0)
 
     def test_crash_after_request_before_database_commit(self):
         self.seed()
