@@ -20,6 +20,8 @@ TRANSIENT = (8, 11, 16, 29)
 # Automatic resends per event before it is left for a human.
 MAX_AUTO_RESENDS = 2
 MISSING_MIN_AGE = 3600
+# A sending session is over after this long without a new batch.
+SESSION_QUIET = 900
 
 
 class Notifier:
@@ -131,8 +133,8 @@ def needs_review(store):
     )
 
 
-def summary(store, cfg, now):
-    since = now - DAY
+def summary(store, cfg, now, since=None, title="📊 Импорт Last.fm, сводка за сутки"):
+    since = now - DAY if since is None else since
     sent = store.rows("SELECT count(*) n FROM attempts WHERE sent_at>?", (since,))[0][
         "n"
     ]
@@ -149,9 +151,9 @@ def summary(store, cfg, now):
     left = state["pending"]
     review = needs_review(store)
     lines = [
-        "📊 Импорт Last.fm, сводка за сутки",
+        title,
         f"Отправлено: {sent}, сохранено: {stored}",
-        f"Выброшено Last.fm сейчас: {state['confirmed_missing']}, переотправлено за сутки: {resent}",
+        f"Выброшено Last.fm сейчас: {state['confirmed_missing']}, переотправлено: {resent}",
         f"Неясных: {state['uncertain']}, на ручной разбор: {len(review)}",
         f"В профиле: {total:,} из {total + left:,} ({total / max(1, total + left):.1%})".replace(
             ",", " "
@@ -165,13 +167,35 @@ def summary(store, cfg, now):
 
 
 def maybe_report(store, cfg, notifier, now):
+    """Report each finished sending session; otherwise a daily sign of life.
+
+    A session counts as finished once nothing was sent for SESSION_QUIET seconds,
+    so the numbers are fresh instead of a day old.
+    """
+    last = store.get("last_report_at", 0)
+    latest = store.rows("SELECT max(sent_at) t FROM attempts")[0]["t"] or 0
     local = datetime.fromtimestamp(now, ZoneInfo(cfg.account_timezone))
-    day = local.date().isoformat()
-    if local.hour < cfg.report_hour or store.get("last_report_day") == day:
+    if latest > last and now - latest >= SESSION_QUIET:
+        text = summary(
+            store,
+            cfg,
+            now,
+            since=last or latest - DAY,
+            title="✅ Импорт Last.fm: отправка завершена",
+        )
+    elif (
+        local.hour >= cfg.report_hour
+        and store.get("last_report_day") != local.date().isoformat()
+        and now - latest >= DAY
+    ):
+        # Nothing sent for a day: say so daily, so silence never hides a stall.
+        text = summary(store, cfg, now)
+    else:
         return False
-    notifier.send(summary(store, cfg, now))
+    notifier.send(text)
     with store.conn:
-        store.set("last_report_day", day)
+        store.set("last_report_at", now)
+        store.set("last_report_day", local.date().isoformat())
     return True
 
 

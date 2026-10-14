@@ -394,9 +394,16 @@ def run(store, api, cfg, args, tick=None):
                     }
                 )
                 return
-            # One history poll per configured interval, no daily manual intervention.
+            # Wake when the oldest counted attempt leaves the rolling window, or at
+            # the next poll, whichever is sooner; avoids drifting later each day.
+            oldest = store.rows(
+                "SELECT min(sent_at) t FROM attempts WHERE sent_at>?", (now - DAY,)
+            )[0]["t"]
+            wake = now + cfg.poll_seconds
+            if oldest:
+                wake = min(wake, max(now + 60, oldest + DAY + 5))
             with store.conn:
-                store.set("cooldown_until", now + cfg.poll_seconds)
+                store.set("cooldown_until", wake)
             print("Rolling budget exhausted; waiting.", flush=True)
             continue
         rows = rows[: min(capacity, cfg.batch_size)]

@@ -104,7 +104,22 @@ class WorkerTest(test_importer.ImporterTest):
             self.assertFalse(Notifier({}).send("local only"))
         self.assertIn("local only", out.getvalue())
 
-    def test_daily_report_once_per_local_day_after_report_hour(self):
+    def test_report_follows_each_finished_sending_session(self):
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(3)])
+        sync(self.store, FakeAPI(), self.cfg, 0, NOW, NOW)
+        rows = assign(self.store, select(self.store, 50), self.cfg, NOW)
+        api = FakeAPI()
+        submit(self.store, api, self.cfg, rows, NOW)
+        verify(self.store, api, self.cfg, NOW + 60)
+        # Still inside the session: no report yet.
+        self.assertFalse(maybe_report(self.store, self.cfg, self.notifier, NOW + 120))
+        self.assertTrue(maybe_report(self.store, self.cfg, self.notifier, NOW + 900))
+        self.assertIn("отправка завершена", self.notifier.messages[0])
+        self.assertIn("Отправлено: 3, сохранено: 3", self.notifier.messages[0])
+        # Nothing new sent: no second report.
+        self.assertFalse(maybe_report(self.store, self.cfg, self.notifier, NOW + 3600))
+
+    def test_daily_sign_of_life_only_when_nothing_was_sent(self):
         self.seed()
         # NOW is 08:00 UTC = 09:00 Warsaw in January.
         cfg = test_importer.replace(

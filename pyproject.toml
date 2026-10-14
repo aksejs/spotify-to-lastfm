@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spotify-history-import"
-version = "0.2.0"
+version = "0.2.1"
 description = "Resumable, auditable Spotify history importer for Last.fm"
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0.2,<7"]

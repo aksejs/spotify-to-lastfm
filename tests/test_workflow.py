@@ -76,6 +76,19 @@ class WorkflowTest(test_importer.ImporterTest):
             self.assertLessEqual(sum(t - 86400 < sent <= t for sent in times), 5)
         self.assertTrue(list(self.root.glob("state-backups/auto-*.sqlite")))
 
+    def test_wakes_when_the_rolling_budget_frees_not_at_the_next_poll(self):
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(4)])
+        self.full_snapshot()
+        cfg = replace(
+            self.cfg, daily_budget=2, combined_budget=2, batch_size=2, poll_seconds=3600
+        )
+        self.scheduler(FakeAPI(), cfg)
+        sent = sorted(
+            {r["sent_at"] for r in self.store.rows("SELECT sent_at FROM attempts")}
+        )
+        self.assertEqual(len(sent), 2)
+        self.assertLess(sent[1] - sent[0], 86400 + 120)
+
     def test_startup_outage_recovers_without_writes_until_authenticated(self):
         self.seed()
         self.full_snapshot()
