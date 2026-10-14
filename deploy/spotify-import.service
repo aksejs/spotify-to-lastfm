@@ -6,7 +6,7 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=REPO
-ExecStart=REPO/.venv/bin/spotify-import --config config.local.yaml run --approve-continuous ACCOUNT
+ExecStart=REPO/.venv/bin/spotify-import --config config.local.yaml serve --approve-continuous ACCOUNT
 # Exit 0 means the queue is finished; failures restart at most hourly.
 Restart=on-failure
 RestartSec=3600

@@ -22,6 +22,8 @@ verify_delay_seconds: 30
 max_scrobbles_per_day: 740
 account_timezone: "Europe/Warsaw"
 day_settle_hours: 2
+# Local hour (account_timezone) of the daily Telegram summary in `serve`.
+report_hour: 21
 request_interval_seconds: 1.0
 poll_seconds: 3600
 # Plays ending at/after this UTC instant were already scrobbled live by the

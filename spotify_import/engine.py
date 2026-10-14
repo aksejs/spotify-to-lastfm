@@ -196,6 +196,7 @@ def status(store, cfg, now=None):
         "SELECT count(*) n FROM events WHERE overlap IS NOT NULL"
     )[0]["n"]
     result["daily_limit_hits"] = limit_hits(store)
+    result["halted"] = store.get("halted")
     result["history_coverage"] = store.rows(
         "SELECT * FROM history_ranges ORDER BY fetched_at DESC LIMIT 5"
     )

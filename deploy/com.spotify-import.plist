@@ -16,7 +16,7 @@
     <string>REPO/.venv/bin/spotify-import</string>
     <string>--config</string>
     <string>config.local.yaml</string>
-    <string>run</string>
+    <string>serve</string>
     <string>--approve-continuous</string>
     <string>ACCOUNT</string>
   </array>

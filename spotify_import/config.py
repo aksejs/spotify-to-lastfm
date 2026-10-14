@@ -32,6 +32,8 @@ class Config:
     account_timezone: str = "UTC"
     # Only fill days that ended this long ago, so live plays never hit the cap.
     day_settle_hours: int = 2
+    # Local hour (account_timezone) of the daily Telegram summary.
+    report_hour: int = 21
     # UTC instant from which the account already has live scrobbles of these plays.
     live_scrobbling_since: str | None = None
     overrides: list = field(default_factory=list)
@@ -52,6 +54,7 @@ class Config:
             "verify_delay_seconds",
             "max_scrobbles_per_day",
             "day_settle_hours",
+            "report_hour",
         ):
             if type(getattr(self, key)) is not int:
                 raise ValueError(f"{key} must be an integer")
@@ -73,6 +76,8 @@ class Config:
             raise ValueError("timestamp_spacing_seconds must be 1..600")
         if not 1 <= self.max_scrobbles_per_day <= 10000:
             raise ValueError("max_scrobbles_per_day must be 1..10000")
+        if not 0 <= self.report_hour <= 23:
+            raise ValueError("report_hour must be 0..23")
         if not 0 <= self.day_settle_hours <= 48:
             raise ValueError("day_settle_hours must be 0..48")
         try:

@@ -21,31 +21,25 @@ Read-only at any time, even while the worker runs: `si status`. Every other comm
 
 ## Unattended service
 
-Templates live in `deploy/`. Installing one **is** the authorization for continuous submission; the CLI flag `--approve-continuous ACCOUNT` is embedded in it.
+Use `serve` for unattended operation. It runs the continuous import and:
+- waits out temporary Last.fm failures (codes 8/11/16/29, network errors) instead of exiting;
+- checks every batch, re-checks missing scrobbles hourly and requeues them after an hour, at most twice per play;
+- sends a Telegram summary daily at `report_hour` (account timezone), plus alerts;
+- **halts** on anything that needs a human (a pattern of drops, timestamp refusals, auth or config problems). A halt is stored in the database, so restarts send nothing until `resume`.
 
-macOS:
+Telegram setup: create a bot with @BotFather and send it any message. Then put `TELEGRAM_BOT_TOKEN` in the environment (or `secrets.json`), run `si telegram-chats` to find your chat id, set `TELEGRAM_CHAT_ID`, and test with `si notify-test`. The token is never printed.
 
 ```sh
-sed -e "s#REPO#$PWD#g" -e "s#ACCOUNT#DivokaSarka#g" deploy/com.spotify-import.plist \
-  > ~/Library/LaunchAgents/com.spotify-import.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.spotify-import.plist
-tail -f state/worker.log
+si serve --approve-continuous DivokaSarka      # foreground; Ctrl-C/SIGTERM stops between steps
+si status                                      # works while serve runs; shows "halted"
+si resume --note "what was checked"            # clears a halt; works while serve holds the lock
 ```
 
-Linux: substitute the same placeholders into `deploy/spotify-import.service`, copy it to `~/.config/systemd/user/`, and run `systemctl --user enable --now spotify-import`. Also run `loginctl enable-linger` so the worker runs without an open session.
+Container image: `ghcr.io/aksejs/spotify-to-lastfm:<version>`, built by GitHub Actions on `v*` tags. The image keeps everything in `/data`: `import.sqlite`, `config.yaml`, backups, and optionally `secrets.json`. Secrets normally come from an env file. The entrypoint already passes those paths, so `docker compose run --rm scrobbler status` and `docker compose run --rm scrobbler resume --note "..."` work directly. The deployment (compose service, env file, migration) is described in the private `homelab` repo, `deploy/spotify-scrobbler.md`.
 
-After each batch the worker waits `verify_delay_seconds`, reads account history, and records every play as verified or missing. It sends nothing while an earlier batch is unchecked, and it stops for review if more than 10% of a batch (minimum 2 plays) is missing. The worker sleeps while the rolling budget is exhausted, verifies uncertain events every `poll_seconds`, and snapshots the database every `backup_interval_hours` (`state/import-backups/`). A Mac that sleeps simply resumes later. The budget is wall-clock based.
+Other mutating commands (`verify`, `resend-missing`, `run`) need the database lock: stop the service first (`docker compose stop scrobbler`), run them with `docker compose run --rm scrobbler …`, then start it again.
 
-## Last.fm's per-day limit
-
-Measured on 2026-10-09: Last.fm stores at most **750 scrobbles per calendar day of the scrobble's timestamp** (the count matched in both UTC and the account's timezone). Beyond that it still answers "accepted, 0 ignored" and drops the scrobble. No code 5 was returned.
-
-The importer therefore:
-- fills each finished day (ended `day_settle_hours` ago in UTC and `account_timezone`) up to `max_scrobbles_per_day` (740), counting live plays already on it;
-- moves to the next day when one is full, and waits when no finished day has room. Roughly one new day opens per real day, so throughput is about 740 minus your live plays that day;
-- checks every batch after sending, so any further drop is caught and stops the run.
-
-Day-filling only uses days whose live listening is complete, so your own scrobbles never compete with the import. `daily_budget` still caps submissions per rolling 24 h; a separate per-submission limit (code 5) has not been observed yet. `status` → `daily_limit_hits` records it if it ever appears.
+macOS/Linux service templates without Docker remain in `deploy/`; prefer `serve` over `run` in them.
 
 ## Pause and resume
 

@@ -39,7 +39,13 @@ def credentials(path):
         if path.stat().st_mode & 0o077:
             raise ValueError("Secrets file must have mode 600")
         values = json.loads(path.read_text())
-    keys = ("LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY")
+    keys = (
+        "LASTFM_API_KEY",
+        "LASTFM_API_SECRET",
+        "LASTFM_SESSION_KEY",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+    )
     return {k: os.environ.get(k) or values.get(k, "") for k in keys}
 
 

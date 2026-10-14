@@ -83,7 +83,7 @@ After a full history snapshot, overlap review, and explicit separate authorizati
 spotify-import --config config.local.yaml run --approve-continuous YOUR_CONFIGURED_ACCOUNT
 ```
 
-It runs in the foreground, sleeps when the budget is exhausted, and periodically reconciles uncertain events. launchd/systemd templates are in `deploy/`; nothing is installed automatically. See [the runbook](docs/RUNBOOK.md) for installing, pausing, budget changes, restore, reconciliation, and rejection diagnosis. Stop with Ctrl-C and resume with the same database and command. Only one mutating importer process may hold the database lock. Read-only `status` remains available while it runs.
+It runs in the foreground, sleeps when the budget is exhausted, and periodically reconciles uncertain events. For unattended operation use `serve` (Telegram reports and alerts, automatic resends, persistent halts) or the Docker image `ghcr.io/aksejs/spotify-to-lastfm`; launchd/systemd templates are in `deploy/`. Nothing is installed automatically. See [the runbook](docs/RUNBOOK.md) for installing, pausing, budget changes, restore, reconciliation, and rejection diagnosis. Stop with Ctrl-C and resume with the same database and command. Only one mutating importer process may hold the database lock. Read-only `status` remains available while it runs.
 
 Pause the worker before exporting or backing up. Use `backup`, which uses SQLite's backup API; do not copy only a live database file while omitting its WAL. Restore to a separate path and inspect using `--db`. **A stale backup can forget submissions made after the backup:** do not resume it until later attempt records and account history have been reconciled. Restoring files alone cannot make forgotten submissions safe to replay.
 

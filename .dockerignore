@@ -1,0 +1,19 @@
+# Private data and local state must never enter an image.
+Spotify Extended Streaming History/
+state/
+audit/
+*.sqlite*
+config.local.yaml
+credentials.env
+.env
+secrets*.json
+# Not needed at runtime.
+.git/
+.github/
+.venv/
+.ruff_cache/
+**/__pycache__/
+*.egg-info/
+tests/
+docs/
+deploy/

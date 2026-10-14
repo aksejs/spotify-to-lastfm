@@ -2,10 +2,12 @@ import argparse
 import csv
 import json
 import os
+import signal
 import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from .api import APIError, LastFM, TransportError, credentials, save_credentials
@@ -26,6 +28,7 @@ from .engine import (
 )
 from .history import gaps, overlaps, resend, sync, verify
 from .prepare import prepare, reclassify
+from .worker import Notifier, resume, serve
 
 
 def output(value):
@@ -102,6 +105,16 @@ def parser():
     )
     gap_include.add_argument("path")
     gap_include.add_argument("--note", required=True)
+    serve = commands.add_parser(
+        "serve", help="Unattended worker: continuous run, reports, halts, resends"
+    )
+    serve.add_argument("--approve-continuous", metavar="ACCOUNT", required=True)
+    resume_cmd = commands.add_parser("resume", help="Clear a halt after review")
+    resume_cmd.add_argument("--note", required=True)
+    commands.add_parser("notify-test", help="Send a Telegram test message")
+    commands.add_parser(
+        "telegram-chats", help="List chats that wrote to the bot (find the chat id)"
+    )
     again = commands.add_parser(
         "resend-missing",
         help="Requeue accepted scrobbles that account history still lacks",
@@ -259,8 +272,12 @@ def check_sent(store, api, cfg, continuous, now):
         )
 
 
-def run(store, api, cfg, args):
+def run(store, api, cfg, args, tick=None):
     continuous = bool(args.approve_continuous)
+    if continuous and store.get("halted"):
+        raise ValueError(
+            "Halted: " + store.get("halted")["reason"] + "; review, then run resume"
+        )
     # Continuous until the budget or a cooldown would make it sleep.
     once = continuous and getattr(args, "once", False)
     if continuous and args.approve_continuous != cfg.account:
@@ -307,6 +324,8 @@ def run(store, api, cfg, args):
         store.set("last_run_config", asdict(cfg))
     while True:
         now = int(time.time())
+        if tick:
+            tick(now)
         if store.get("auth_blocked"):
             raise ValueError("Authentication blocked; correct credentials and restart")
         cooldown = store.get("cooldown_until", 0)
@@ -452,7 +471,11 @@ def main(argv=None):
             if account and account.casefold() != cfg.account.casefold():
                 raise ValueError("Database belongs to another Last.fm account")
             output(status(store, cfg))
-            return
+            return 0
+        if args.command == "resume":
+            # Lock-free like status: the halted worker keeps holding the lock.
+            output({"resumed_from": resume(store, args.note)})
+            return 0
         with store.lock():
             store.bind(cfg.account)
             store.recover()
@@ -515,6 +538,35 @@ def main(argv=None):
                     )
                 elif args.command == "resend-missing":
                     output(resend(store, api, cfg, args.event_ids, args.note))
+                elif args.command in ("serve", "notify-test", "telegram-chats"):
+                    notifier = Notifier(credentials(args.secrets))
+                    if args.command == "telegram-chats":
+                        output(notifier.chats())
+                    elif args.command == "notify-test":
+                        sent = notifier.send(
+                            "✅ Тест: импорт Last.fm может писать сюда."
+                        )
+                        if not sent:
+                            raise ValueError("Telegram message not delivered")
+                    else:
+                        if args.approve_continuous != cfg.account:
+                            raise ValueError(
+                                "--approve-continuous must exactly match configured account"
+                            )
+                        # docker stop sends SIGTERM; leave like Ctrl-C between steps.
+                        signal.signal(signal.SIGTERM, signal.default_int_handler)
+                        serve(
+                            store,
+                            api,
+                            cfg,
+                            SimpleNamespace(
+                                approve_plan=None,
+                                approve_continuous=args.approve_continuous,
+                                once=False,
+                            ),
+                            notifier,
+                            run,
+                        )
                 elif args.command == "verify":
                     output(verify(store, api, cfg))
                 elif args.command == "run":
