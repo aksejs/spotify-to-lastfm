@@ -161,9 +161,39 @@ def summary(store, cfg, now, since=None, title="📊 Импорт Last.fm, св�
         f"Осталось: {left:,}".replace(",", " ")
         + f", финиш ≈ {state['estimated_completion_utc']}",
     ]
+    lines[2:2] = period(store, cfg, since)
     if store.get("halted"):
         lines.append(f"⛔ Остановлен: {store.get('halted')['reason']}")
     return "\n".join(lines)
+
+
+def period(store, cfg, since):
+    """Which listening dates this report covers, and where they landed on Last.fm.
+
+    Resent plays are left out: they come from older dates and would only blur
+    the range; their count is reported separately.
+    """
+    row = store.rows(
+        """SELECT min(e.original_epoch) a, max(e.original_epoch) b,
+        min(t.assigned_ts) p, max(t.assigned_ts) q
+        FROM attempts t JOIN events e ON e.id=t.event_id
+        WHERE t.sent_at>? AND t.outcome='confirmed'
+        AND e.id NOT IN (SELECT event_id FROM decisions WHERE action='resend')""",
+        (since,),
+    )[0]
+    if row["a"] is None:
+        return []
+    zone = ZoneInfo(cfg.account_timezone)
+
+    def span(start, end):
+        first, last = (
+            datetime.fromtimestamp(t, zone).strftime("%d.%m.%Y") for t in (start, end)
+        )
+        return first if first == last else f"{first} – {last}"
+
+    days = span(row["p"], row["q"])
+    label = "В профиле на дату" if "–" not in days else "В профиле на даты"
+    return [f"Прослушивания: {span(row['a'], row['b'])}", f"{label}: {days}"]
 
 
 def maybe_report(store, cfg, notifier, now):

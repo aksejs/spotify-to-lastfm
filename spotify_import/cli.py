@@ -304,6 +304,9 @@ def run(store, api, cfg, args, tick=None):
             if once:
                 output({"paused_until": store.get("cooldown_until", 0)})
                 return
+            # Reports and resend checks keep running while a restart waits out a pause.
+            if tick:
+                tick(now)
             time.sleep(min(60, remaining))
             continue
         try:

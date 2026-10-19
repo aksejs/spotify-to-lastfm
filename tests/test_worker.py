@@ -119,6 +119,47 @@ class WorkerTest(test_importer.ImporterTest):
         # Nothing new sent: no second report.
         self.assertFalse(maybe_report(self.store, self.cfg, self.notifier, NOW + 3600))
 
+    def test_session_report_names_listening_period_and_profile_dates(self):
+        self.seed(
+            [
+                event(ts="2020-01-01T00:05:00Z", master_metadata_track_name="A"),
+                event(ts="2020-01-31T12:00:00Z", master_metadata_track_name="B"),
+            ]
+        )
+        sync(self.store, FakeAPI(), self.cfg, 0, NOW, NOW)
+        rows = assign(self.store, select(self.store, 50), self.cfg, NOW)
+        api = FakeAPI()
+        submit(self.store, api, self.cfg, rows, NOW)
+        verify(self.store, api, self.cfg, NOW + 60)
+        cfg = test_importer.replace(self.cfg, account_timezone="Europe/Warsaw")
+        self.assertTrue(maybe_report(self.store, cfg, self.notifier, NOW + 900))
+        text = self.notifier.messages[0]
+        self.assertIn("Прослушивания: 01.01.2020 – 31.01.2020", text)
+        # NOW - 2 days = 13 Jan 2027 08:00 UTC: one profile date.
+        self.assertIn("В профиле на дату: 13.01.2027", text)
+
+    def test_tick_runs_while_a_restart_waits_out_a_pause(self):
+        import test_workflow
+
+        self.seed()
+        sync(self.store, FakeAPI(), self.cfg, 0, NOW, NOW)
+        with self.store.conn:
+            self.store.set("cooldown_until", NOW + 300)
+        api = FakeAPI()
+        api.check_account = lambda account: None
+        ticks = []
+        clock = test_workflow.Clock()
+        args = SimpleNamespace(approve_plan=None, approve_continuous=self.cfg.account)
+        with (
+            patch("spotify_import.cli.time.time", clock.time),
+            patch("spotify_import.cli.time.sleep", clock.sleep),
+            redirect_stdout(StringIO()),
+        ):
+            run(self.store, api, self.cfg, args, tick=ticks.append)
+        # Ticked during the pause, before the account check and first send.
+        self.assertLess(ticks[0], NOW + 300)
+        self.assertEqual(api.calls, 1)
+
     def test_daily_sign_of_life_only_when_nothing_was_sent(self):
         self.seed()
         # NOW is 08:00 UTC = 09:00 Warsaw in January.
