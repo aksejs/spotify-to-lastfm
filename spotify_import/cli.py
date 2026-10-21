@@ -387,6 +387,11 @@ def run(store, api, cfg, args, tick=None):
                 raise
             print("History read failed; backing off before any write.", flush=True)
             continue
+        # A successful read ends a run of failures; scattered transient errors
+        # over several days must not add up to hours-long pauses.
+        if store.get("consecutive_failures"):
+            with store.conn:
+                store.set("consecutive_failures", 0)
         capacity = budget(store, cfg, now)["remaining_daily_budget"]
         if not capacity:
             if not continuous or once:

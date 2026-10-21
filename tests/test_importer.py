@@ -352,15 +352,53 @@ class ImporterTest(unittest.TestCase):
             submit(self.store, api, self.cfg, rows, NOW)
         self.assertEqual(self.rows()[0]["status"], "uncertain")
 
-    def test_reordered_response_is_uncertain(self):
+    def test_reordered_response_is_matched_by_timestamp(self):
+        # Real case 2026-10-21: Last.fm listed the batch in another order.
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(3)])
+        rows = self.assigned()
+        api = FakeAPI()
+        answer = response(rows, [0, 1, 0])
+        answer["scrobbles"]["scrobble"].reverse()
+        with patch.object(api, "submit", return_value=answer):
+            submit(self.store, api, self.cfg, rows, NOW)
+        states = {r["id"]: r["status"] for r in self.rows()}
+        self.assertEqual(
+            [states[r["id"]] for r in rows], ["confirmed", "rejected", "confirmed"]
+        )
+
+    def test_response_with_unknown_timestamp_is_uncertain(self):
         self.seed()
         rows = self.assigned()
         api = FakeAPI()
         bad = response(rows)
-        bad["scrobbles"]["scrobble"].reverse()
+        bad["scrobbles"]["scrobble"][0]["timestamp"] = "1"
         with patch.object(api, "submit", return_value=bad):
             submit(self.store, api, self.cfg, rows, NOW)
-        self.assertEqual(self.rows()[0]["status"], "uncertain")
+        self.assertTrue(all(r["status"] == "uncertain" for r in self.rows()))
+
+    def test_stored_garbled_response_is_reprocessed(self):
+        from spotify_import.engine import GARBLED
+
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(3)])
+        rows = self.assigned()
+        answer = response(rows, [0, 1, 0])
+        answer["scrobbles"]["scrobble"].reverse()
+        api = FakeAPI(error=TransportError("simulate an old garbled verdict"))
+        submit(self.store, api, self.cfg, rows, NOW)
+        with self.store.conn:
+            self.store.conn.execute(
+                "UPDATE attempts SET response=?",
+                (GARBLED + json.dumps(answer, ensure_ascii=False),),
+            )
+        verify(self.store, FakeAPI(), self.cfg, NOW + 600)
+        states = {r["id"]: r["status"] for r in self.rows()}
+        self.assertEqual(
+            [states[r["id"]] for r in rows], ["confirmed", "rejected", "confirmed"]
+        )
+        outcomes = {
+            r["outcome"] for r in self.store.rows("SELECT outcome FROM attempts")
+        }
+        self.assertEqual(outcomes, {"confirmed", "rejected"})
 
     def test_rolling_budget_and_live_listening(self):
         self.seed()

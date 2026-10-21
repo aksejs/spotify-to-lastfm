@@ -89,6 +89,31 @@ class WorkflowTest(test_importer.ImporterTest):
         self.assertEqual(len(sent), 2)
         self.assertLess(sent[1] - sent[0], 86400 + 120)
 
+    def test_successful_history_read_resets_failure_streak(self):
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(2)])
+        self.full_snapshot()
+        cfg = replace(self.cfg, daily_budget=1, combined_budget=1, batch_size=1)
+        submit(
+            self.store,
+            FakeAPI(),
+            cfg,
+            assign(self.store, select(self.store, 1), cfg, NOW),
+            NOW,
+        )
+        with self.store.conn:
+            self.store.set("consecutive_failures", 7)
+        api = FakeAPI()
+        api.check_account = lambda account: None
+        args = SimpleNamespace(
+            approve_plan=None, approve_continuous=cfg.account, once=True
+        )
+        with (
+            patch("spotify_import.cli.time.time", Clock().time),
+            redirect_stdout(StringIO()),
+        ):
+            run(self.store, api, cfg, args)
+        self.assertEqual(self.store.get("consecutive_failures"), 0)
+
     def test_startup_outage_recovers_without_writes_until_authenticated(self):
         self.seed()
         self.full_snapshot()

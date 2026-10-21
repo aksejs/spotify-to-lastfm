@@ -4,6 +4,8 @@ import time
 import unicodedata
 from collections import Counter
 
+from .engine import reprocess_garbled
+
 
 def sync(store, api, cfg, start, end, now=None):
     now = int(time.time()) if now is None else now
@@ -93,6 +95,8 @@ def verify(store, api, cfg, now=None, unresolved=False, ids=None):
     """
     now = int(time.time()) if now is None else now
     store.recover()
+    # Answers once judged garbled may be readable now (e.g. reordered batches).
+    reprocess_garbled(store, now)
     rows = store.rows(
         "SELECT * FROM events WHERE status IN ('uncertain','confirmed') AND assigned_ts IS NOT NULL"
         + (" AND (status='uncertain' OR verified_at IS NULL)" if unresolved else "")

@@ -421,6 +421,101 @@ def outcome(store, batch, rows, states, now, metadata=None):
             )
 
 
+GARBLED = "Malformed/inconsistent batch response: "
+
+
+def parse_response(response, rows):
+    """Per-row (state, stored response) for a track.scrobble answer.
+
+    Last.fm may list the batch in another order than it was sent, so items are
+    matched by timestamp: every row in a batch has its own second. Anything
+    that does not add up raises ValueError and the batch stays uncertain.
+    """
+    result = response["scrobbles"]
+    items = result["scrobble"]
+    items = [items] if isinstance(items, dict) else items
+    codes = [int(item["ignoredMessage"]["code"]) for item in items]
+    accepted, ignored = (
+        int(result["@attr"]["accepted"]),
+        int(result["@attr"]["ignored"]),
+    )
+    if (
+        len(items) != len(rows)
+        or accepted != codes.count(0)
+        or ignored != len(rows) - accepted
+    ):
+        raise ValueError("inconsistent counts")
+    by_ts = {}
+    for item in items:
+        by_ts.setdefault(int(item["timestamp"]), []).append(item)
+    if any(len(v) > 1 for v in by_ts.values()) or set(by_ts) != {
+        row["assigned_ts"] for row in rows
+    }:
+        raise ValueError("response timestamps do not match the batch")
+    states, row_codes = [], []
+    for row in rows:
+        item = by_ts[row["assigned_ts"]][0]
+        code = int(item["ignoredMessage"]["code"])
+        safe = {
+            k: item[k]
+            for k in ("track", "artist", "album", "timestamp", "ignoredMessage")
+            if k in item
+        }
+        safe["batch_counts"] = {"accepted": accepted, "ignored": ignored}
+        state = "confirmed" if code == 0 else ("pending" if code == 5 else "rejected")
+        states.append((state, json.dumps(safe, ensure_ascii=False)))
+        row_codes.append(code)
+    return states, row_codes
+
+
+def reprocess_garbled(store, now=None):
+    """Re-read stored answers that were judged garbled under older, stricter rules.
+
+    Only events still uncertain at the same timestamp change; a response that
+    still does not add up leaves its batch uncertain.
+    """
+    now = int(time.time()) if now is None else now
+    changed = 0
+    for (batch,) in store.conn.execute(
+        "SELECT DISTINCT batch FROM attempts WHERE outcome='uncertain' AND response LIKE ?",
+        (GARBLED + "%",),
+    ).fetchall():
+        attempts = store.rows(
+            """SELECT a.event_id, a.assigned_ts, a.sent_at, a.response, e.status,
+            e.assigned_ts AS current_ts
+            FROM attempts a JOIN events e ON e.id=a.event_id WHERE a.batch=?
+            ORDER BY a.assigned_ts""",
+            (batch,),
+        )
+        try:
+            raw = json.loads(attempts[0]["response"][len(GARBLED) :])
+            states, _ = parse_response(raw, attempts)
+        except (KeyError, ValueError, TypeError, IndexError):
+            continue
+        with store.conn:
+            for attempt, (state, reason) in zip(attempts, states):
+                if (
+                    attempt["status"] != "uncertain"
+                    or attempt["current_ts"] != attempt["assigned_ts"]
+                ):
+                    continue
+                store.conn.execute(
+                    "UPDATE events SET status=?,response=?,confirmed_at=? WHERE id=?",
+                    (
+                        state,
+                        reason,
+                        attempt["sent_at"] if state == "confirmed" else None,
+                        attempt["event_id"],
+                    ),
+                )
+                store.conn.execute(
+                    "UPDATE attempts SET outcome=?,response=? WHERE batch=? AND event_id=?",
+                    (state, reason, batch, attempt["event_id"]),
+                )
+                changed += 1
+    return changed
+
+
 def submit(store, api, cfg, rows, now=None):
     now = int(time.time()) if now is None else now
     if not rows:
@@ -490,38 +585,7 @@ def submit(store, api, cfg, rows, now=None):
             backoff(store, now)
         return len(rows)
     try:
-        result = response["scrobbles"]
-        items = result["scrobble"]
-        items = [items] if isinstance(items, dict) else items
-        codes = [int(item["ignoredMessage"]["code"]) for item in items]
-        accepted, ignored = (
-            int(result["@attr"]["accepted"]),
-            int(result["@attr"]["ignored"]),
-        )
-        if (
-            len(items) != len(rows)
-            or accepted != codes.count(0)
-            or ignored != len(rows) - accepted
-        ):
-            raise ValueError("inconsistent counts")
-        # Timestamp equality verifies order even if the service corrects metadata.
-        if any(
-            int(item["timestamp"]) != row["assigned_ts"]
-            for item, row in zip(items, rows)
-        ):
-            raise ValueError("response order/timestamps mismatch")
-        states = []
-        for item, code in zip(items, codes):
-            safe = {
-                k: item[k]
-                for k in ("track", "artist", "album", "timestamp", "ignoredMessage")
-                if k in item
-            }
-            safe["batch_counts"] = {"accepted": accepted, "ignored": ignored}
-            state = (
-                "confirmed" if code == 0 else ("pending" if code == 5 else "rejected")
-            )
-            states.append((state, json.dumps(safe, ensure_ascii=False)))
+        states, codes = parse_response(response, rows)
     except (KeyError, ValueError, TypeError):
         outcome(
             store,
@@ -530,8 +594,7 @@ def submit(store, api, cfg, rows, now=None):
             [
                 (
                     "uncertain",
-                    "Malformed/inconsistent batch response: "
-                    + json.dumps(response, ensure_ascii=False)[:20000],
+                    GARBLED + json.dumps(response, ensure_ascii=False)[:20000],
                 )
             ]
             * len(rows),
