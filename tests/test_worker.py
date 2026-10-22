@@ -10,7 +10,7 @@ from unittest.mock import patch
 import test_importer
 from test_importer import FakeAPI, NOW, event
 from spotify_import.cli import main, run
-from spotify_import.engine import assign, select, submit
+from spotify_import.engine import DAY, assign, select, submit
 from spotify_import.history import sync, verify
 from spotify_import.worker import (
     MAX_AUTO_RESENDS,
@@ -111,13 +111,15 @@ class WorkerTest(test_importer.ImporterTest):
         api = FakeAPI()
         submit(self.store, api, self.cfg, rows, NOW)
         verify(self.store, api, self.cfg, NOW + 60)
+        # The day's budget is used up, so the evening ends after the quiet period.
+        cfg = test_importer.replace(self.cfg, daily_budget=3, combined_budget=3)
         # Still inside the session: no report yet.
-        self.assertFalse(maybe_report(self.store, self.cfg, self.notifier, NOW + 120))
-        self.assertTrue(maybe_report(self.store, self.cfg, self.notifier, NOW + 900))
+        self.assertFalse(maybe_report(self.store, cfg, self.notifier, NOW + 120))
+        self.assertTrue(maybe_report(self.store, cfg, self.notifier, NOW + 900))
         self.assertIn("отправка завершена", self.notifier.messages[0])
         self.assertIn("Отправлено: 3, сохранено: 3", self.notifier.messages[0])
         # Nothing new sent: no second report.
-        self.assertFalse(maybe_report(self.store, self.cfg, self.notifier, NOW + 3600))
+        self.assertFalse(maybe_report(self.store, cfg, self.notifier, NOW + 3600))
 
     def test_session_report_names_listening_period_and_profile_dates(self):
         self.seed(
@@ -131,7 +133,12 @@ class WorkerTest(test_importer.ImporterTest):
         api = FakeAPI()
         submit(self.store, api, self.cfg, rows, NOW)
         verify(self.store, api, self.cfg, NOW + 60)
-        cfg = test_importer.replace(self.cfg, account_timezone="Europe/Warsaw")
+        cfg = test_importer.replace(
+            self.cfg,
+            account_timezone="Europe/Warsaw",
+            daily_budget=2,
+            combined_budget=2,
+        )
         self.assertTrue(maybe_report(self.store, cfg, self.notifier, NOW + 900))
         text = self.notifier.messages[0]
         self.assertIn("Прослушивания: 01.01.2020 – 31.01.2020", text)
@@ -159,6 +166,41 @@ class WorkerTest(test_importer.ImporterTest):
         # Ticked during the pause, before the account check and first send.
         self.assertLess(ticks[0], NOW + 300)
         self.assertEqual(api.calls, 1)
+
+    def test_no_report_while_waiting_for_more_budget_the_same_evening(self):
+        # Real case 2026-10-22: 50 at 21:33, budget for the rest freed at 22:23.
+        cfg = test_importer.replace(self.cfg, daily_budget=2, combined_budget=2)
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(4)])
+        sync(self.store, FakeAPI(), cfg, 0, NOW, NOW)
+        api = FakeAPI()
+        yesterday_late = NOW - DAY + 50 * 60
+        first = assign(self.store, select(self.store, 1), cfg, yesterday_late)
+        submit(self.store, api, cfg, first, yesterday_late)
+        with self.store.conn:
+            self.store.set("last_report_at", yesterday_late + 3600)
+        part = assign(self.store, select(self.store, 1), cfg, NOW)
+        submit(self.store, api, cfg, part, NOW)
+        verify(self.store, api, cfg, NOW + 60)
+        # Budget used up, but more frees in 35 min: the evening is not over.
+        self.assertFalse(maybe_report(self.store, cfg, self.notifier, NOW + 900))
+        rest = assign(self.store, select(self.store, 1), cfg, NOW + 3000)
+        submit(self.store, api, cfg, rest, NOW + 3000)
+        verify(self.store, api, cfg, NOW + 3060)
+        # Next release is a day away: one report for the whole evening.
+        self.assertTrue(maybe_report(self.store, cfg, self.notifier, NOW + 3900))
+        self.assertIn("Отправлено: 2, сохранено: 2", self.notifier.messages[0])
+
+    def test_stalled_sending_still_reported_after_long_quiet(self):
+        self.seed([event(master_metadata_track_name=f"T{i}") for i in range(2)])
+        sync(self.store, FakeAPI(), self.cfg, 0, NOW, NOW)
+        api = FakeAPI()
+        rows = assign(self.store, select(self.store, 1), self.cfg, NOW)
+        submit(self.store, api, self.cfg, rows, NOW)
+        # Budget left (default 500) but nothing sent: reported after 3 hours.
+        self.assertFalse(maybe_report(self.store, self.cfg, self.notifier, NOW + 900))
+        self.assertTrue(
+            maybe_report(self.store, self.cfg, self.notifier, NOW + 3 * 3600)
+        )
 
     def test_daily_sign_of_life_only_when_nothing_was_sent(self):
         self.seed()

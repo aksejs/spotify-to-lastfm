@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from .api import APIError, TransportError
-from .engine import DAY, backoff, status
+from .engine import DAY, backoff, budget, status
 from .history import resend
 
 # Failures Last.fm describes as temporary; the worker waits them out.
@@ -22,6 +22,8 @@ MAX_AUTO_RESENDS = 2
 MISSING_MIN_AGE = 3600
 # A sending session is over after this long without a new batch.
 SESSION_QUIET = 900
+# The evening is over when the next budget release is at least this far away.
+LONG_QUIET = 3 * 3600
 
 
 class Notifier:
@@ -196,6 +198,22 @@ def period(store, cfg, since):
     return [f"Прослушивания: {span(row['a'], row['b'])}", f"{label}: {days}"]
 
 
+def evening_over(store, cfg, now, quiet):
+    """True once no more sending is due soon.
+
+    The rolling budget can free in pieces (e.g. 50 at 21:33, the rest at 22:23
+    after an interrupted evening); a report between them would be premature.
+    """
+    if quiet >= LONG_QUIET:
+        return True  # Stalled although budget may be free: report anyway.
+    if budget(store, cfg, now)["remaining_daily_budget"]:
+        return False
+    oldest = store.rows(
+        "SELECT min(sent_at) t FROM attempts WHERE sent_at>?", (now - DAY,)
+    )[0]["t"]
+    return oldest is None or oldest + DAY - now >= LONG_QUIET
+
+
 def maybe_report(store, cfg, notifier, now):
     """Report each finished sending session; otherwise a daily sign of life.
 
@@ -205,7 +223,12 @@ def maybe_report(store, cfg, notifier, now):
     last = store.get("last_report_at", 0)
     latest = store.rows("SELECT max(sent_at) t FROM attempts")[0]["t"] or 0
     local = datetime.fromtimestamp(now, ZoneInfo(cfg.account_timezone))
-    if latest > last and now - latest >= SESSION_QUIET:
+    quiet = now - latest
+    if (
+        latest > last
+        and quiet >= SESSION_QUIET
+        and evening_over(store, cfg, now, quiet)
+    ):
         text = summary(
             store,
             cfg,
